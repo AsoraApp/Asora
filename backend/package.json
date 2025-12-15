@@ -1,0 +1,8 @@
+{
+  "name": "asora-backend",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "dev": "node src/server.js"
+  }
+}
