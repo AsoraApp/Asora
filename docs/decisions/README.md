@@ -31,9 +31,3 @@ ADRs do NOT replace specs. They govern decisions around them.
 
 ## Locking Rules (Strict)
 
-- LOCKED ADRs are immutable.
-- No edits, rewrites, or retroactive clarification.
-- All changes require a new ADR.
-
-## ADR Naming Convention
-
