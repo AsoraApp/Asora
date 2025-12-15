@@ -31,3 +31,45 @@ ADRs do NOT replace specs. They govern decisions around them.
 
 ## Locking Rules (Strict)
 
+ADR-0001-ledger-immutability.md
+ADR-0002-offline-draft-only.md
+
+
+## ADR Template
+
+Copy the template below when creating a new ADR:
+
+---
+
+# ADR-000X — <Title>
+
+Status: PROPOSED  
+Date (UTC): YYYY-MM-DD  
+Related Specs: B##, B##
+
+## Context
+What problem or ambiguity requires a decision?
+
+## Decision
+What is the decision being made?
+
+## Rationale
+Why this decision was chosen.
+
+## Consequences
+- Positive
+- Negative
+- Risks
+
+## Alternatives Considered
+- Option A
+- Option B
+
+## Constraint Compliance Check
+- Inventory-only: YES / NO
+- Tenant-scoped: YES / NO
+- Ledger-derived truth preserved: YES / NO
+- Deterministic & fail-closed: YES / NO
+- UTC everywhere: YES / NO
+
+---
