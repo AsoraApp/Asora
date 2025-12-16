@@ -10,8 +10,19 @@ const server = http.createServer((req, res) => {
   const requestId = getOrCreateRequestId(req);
   res.setHeader("x-request-id", requestId);
 
-  // ----- resolve session (authoritative, server-side) -----
   const session = resolveSession(req);
+
+  // ----- fail-closed on session / tenant resolution -----
+  if (session.error) {
+    res.writeHead(session.status, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        error: session.error,
+        requestId
+      })
+    );
+    return;
+  }
 
   const ctx = createRequestContext({
     requestId,
