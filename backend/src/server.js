@@ -4,16 +4,19 @@ const { getOrCreateRequestId } = require("../observability/requestId");
 const { createRequestContext } = require("../domain/requestContext");
 const { handleAuthMe } = require("../api/auth");
 const { requireAuth } = require("../auth/requireAuth");
+const { resolveSession } = require("../auth/session");
 
 const server = http.createServer((req, res) => {
   const requestId = getOrCreateRequestId(req);
   res.setHeader("x-request-id", requestId);
 
-  // B1 plumbing only — real auth will populate these later
+  // ----- resolve session (authoritative, server-side) -----
+  const session = resolveSession(req);
+
   const ctx = createRequestContext({
     requestId,
-    userId: "anonymous",
-    tenantId: "unresolved"
+    userId: session.userId,
+    tenantId: session.tenantId
   });
 
   // ----- public route -----
