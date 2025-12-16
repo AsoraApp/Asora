@@ -1,150 +1,43 @@
-const http = require("http");
+import express from "express";
+import http from "http";
 
-const { getOrCreateRequestId } = require("./observability/requestId");
-const { createRequestContext } = require("./domain/requestContext");
-const { handleAuthMe } = require("./api/auth");
-const { requireAuth } = require("./auth/requireAuth");
-const { resolveSession } = require("./auth/session");
-const { emitAudit } = require("./observability/audit");
+// Existing middleware you already have
+import { errorHandler } from "./middleware/errorHandler.js";
+import rejectTenantOverride from "./middleware/rejectTenantOverride.js";
 
-// B2 inventory router + guards
-const inventoryRouter = require("./api/inventory");
-const rejectTenantOverride = require("./middleware/rejectTenantOverride");
+// Existing B2 read routes (KEEP/ADJUST the import name/path to match your repo)
+import inventoryReadRoutes from "./routes/inventory/inventory.read.routes.js";
 
-function readJsonBody(req) {
-  return new Promise((resolve) => {
-    let raw = "";
-    req.on("data", (chunk) => {
-      raw += chunk;
-    });
-    req.on("end", () => {
-      if (!raw) return resolve(null);
-      try {
-        resolve(JSON.parse(raw));
-      } catch {
-        resolve("__INVALID_JSON__");
-      }
-    });
-  });
-}
+// B3 ledger write routes
+import ledgerWriteRoutes from "./routes/inventory/ledger.write.routes.js";
 
-const server = http.createServer(async (req, res) => {
-  const requestId = getOrCreateRequestId(req);
-  res.setHeader("x-request-id", requestId);
+const app = express();
 
-  // Parse JSON body once (for tenant override guard + any future read-only needs)
-  const body = await readJsonBody(req);
-  if (body === "__INVALID_JSON__") {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: { code: "BAD_REQUEST", message: "Invalid JSON" }, requestId }));
-    return;
-  }
-  req.body = body;
+/**
+ * Global middleware
+ */
+app.use(express.json());
+app.use(rejectTenantOverride);
 
-  const session = resolveSession(req);
+/**
+ * Routes
+ * Keep your existing B1 auth + tenant context gates exactly as they exist today.
+ * If you currently mount auth/tenant middleware here, keep it here above these routes.
+ */
+app.use("/api/inventory", inventoryReadRoutes);
+app.use("/api/inventory", ledgerWriteRoutes);
 
-  // ----- fail-closed on session / tenant resolution -----
-  if (session.error) {
-    emitAudit({
-      category: "TENANT",
-      eventType: "TENANT.RESOLVE_FAIL",
-      requestId,
-      error: session.error
-    });
+/**
+ * Error handler MUST be last
+ */
+app.use(errorHandler);
 
-    res.writeHead(session.status, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: session.error, requestId }));
-    return;
-  }
+const server = http.createServer(app);
 
-  emitAudit({
-    category: "TENANT",
-    eventType: "TENANT.RESOLVE_SUCCESS",
-    requestId,
-    userId: session.userId,
-    tenantId: session.tenantId
-  });
+const PORT = process.env.PORT || 3000;
 
-  const ctx = createRequestContext({
-    requestId,
-    userId: session.userId,
-    tenantId: session.tenantId
-  });
-
-  // expose B1/B2 context in a single place
-  req.ctx = ctx;
-
-  // ----- public route -----
-  if (req.method === "GET" && req.url === "/health") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", requestId }));
-    return;
-  }
-
-  // ----- protected routes: /auth/me -----
-  if (req.method === "GET" && req.url === "/auth/me") {
-    const authResult = requireAuth(req, ctx);
-    if (!authResult.ok) {
-      emitAudit({
-        category: "AUTH",
-        eventType: "AUTH.UNAUTHENTICATED",
-        requestId
-      });
-
-      res.writeHead(authResult.status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: authResult.error, requestId }));
-      return;
-    }
-
-    emitAudit({
-      category: "AUTH",
-      eventType: "AUTH.ACCESS_GRANTED",
-      requestId,
-      userId: ctx.userId,
-      tenantId: ctx.tenantId
-    });
-
-    handleAuthMe(req, res, ctx);
-    return;
-  }
-
-  // ----- protected routes: B2 inventory (/api/*) -----
-  if (req.url && req.url.startsWith("/api/")) {
-    const authResult = requireAuth(req, ctx);
-    if (!authResult.ok) {
-      emitAudit({
-        category: "AUTH",
-        eventType: "AUTH.UNAUTHENTICATED",
-        requestId
-      });
-
-      res.writeHead(authResult.status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: authResult.error, requestId }));
-      return;
-    }
-
-    // tenant override guard (fail closed)
-    const guard = rejectTenantOverride(req, res);
-    if (!guard.ok) {
-      res.writeHead(guard.status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: guard.error, requestId }));
-      return;
-    }
-
-    // delegate to inventory router (http-style)
-    const handled = inventoryRouter(req, res);
-    if (handled) return;
-
-    res.writeHead(404, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: { code: "NOT_FOUND", message: "Not found" }, requestId }));
-    return;
-  }
-
-  // ----- fallback -----
-  res.writeHead(404, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ error: "NOT_FOUND", requestId }));
+server.listen(PORT, () => {
+  console.log(`Asora backend listening on port ${PORT}`);
 });
 
-server.listen(3000, () => {
-  console.log("Asora backend running on port 3000");
-});
+export default app;
