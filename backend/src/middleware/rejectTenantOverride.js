@@ -1,26 +1,20 @@
-export default function rejectTenantOverride(req, res, next) {
-  const hasTenantInQuery =
-    req.query && Object.prototype.hasOwnProperty.call(req.query, "tenantId");
+module.exports = function rejectTenantOverride(req, res) {
+  const q = req.url || "";
+  const hasTenantInQuery = /[?&]tenantId=/.test(q);
 
-  const hasTenantInBody =
-    req.body && Object.prototype.hasOwnProperty.call(req.body, "tenantId");
+  const body = req.body || null;
+  const hasTenantInBody = body && Object.prototype.hasOwnProperty.call(body, "tenantId");
 
-  const hasTenantInHeaders =
-    req.headers &&
-    (Object.prototype.hasOwnProperty.call(req.headers, "tenantid") ||
-     Object.prototype.hasOwnProperty.call(req.headers, "x-tenant-id"));
+  const h = req.headers || {};
+  const hasTenantInHeaders = !!(h["x-tenant-id"] || h["tenantid"]);
 
   if (hasTenantInQuery || hasTenantInBody || hasTenantInHeaders) {
-    const requestId = req.ctx?.requestId || null;
-
-    return res.status(400).json({
-      error: {
-        code: "BAD_REQUEST",
-        message: "Tenant override is not permitted",
-        requestId
-      }
-    });
+    return {
+      ok: false,
+      status: 400,
+      error: { code: "BAD_REQUEST", message: "Tenant override is not permitted" }
+    };
   }
 
-  next();
-}
+  return { ok: true };
+};
