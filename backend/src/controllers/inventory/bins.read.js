@@ -1,87 +1,70 @@
-import { PlaceholderInventoryReadStore } from "../../stores/placeholderInventoryReadStore.js";
+const { PlaceholderInventoryReadStore } = require("../../stores/placeholderInventoryReadStore.js");
 
 const store = new PlaceholderInventoryReadStore();
 
-function meta(req) {
+function getMeta(req) {
   return {
     asOfUtc: new Date().toISOString(),
     requestId: req.ctx?.requestId || null
   };
 }
 
-export async function listBinsByHub(req, res) {
-  const tenantId = req.ctx?.tenantId;
-  const { hubId } = req.params;
-
-  if (!tenantId) {
-    return res.status(403).json({
+function tenantOr403(req, res) {
+  if (!req.ctx?.tenantId) {
+    res.status(403).json({
       error: {
         code: "TENANT_UNRESOLVED",
         message: "Tenant unresolved",
         requestId: req.ctx?.requestId || null
       }
     });
+    return null;
   }
+  return req.ctx.tenantId;
+}
 
+module.exports.listBinsByHub = async function listBinsByHub(req, res) {
+  const tenantId = tenantOr403(req, res);
+  if (!tenantId) return;
+
+  const hubId = req.params?.hubId;
   if (!hubId) {
-    return res.status(400).json({
-      error: {
-        code: "BAD_REQUEST",
-        message: "Invalid hubId",
-        requestId: req.ctx?.requestId || null
-      }
+    res.status(400).json({
+      error: { code: "BAD_REQUEST", message: "Invalid hubId", requestId: req.ctx?.requestId || null }
     });
+    return;
   }
 
   const bins = store.listBinsByHub(tenantId, hubId);
   if (!bins) {
-    return res.status(404).json({
-      error: {
-        code: "NOT_FOUND",
-        message: "Hub not found",
-        requestId: req.ctx?.requestId || null
-      }
+    res.status(404).json({
+      error: { code: "NOT_FOUND", message: "Hub not found", requestId: req.ctx?.requestId || null }
     });
+    return;
   }
 
-  return res.json({ data: bins, meta: meta(req) });
-}
+  res.json({ data: bins, meta: getMeta(req) });
+};
 
-export async function getBin(req, res) {
-  const tenantId = req.ctx?.tenantId;
-  const { binId } = req.params;
+module.exports.getBin = async function getBin(req, res) {
+  const tenantId = tenantOr403(req, res);
+  if (!tenantId) return;
 
-  if (!tenantId) {
-    return res.status(403).json({
-      error: {
-        code: "TENANT_UNRESOLVED",
-        message: "Tenant unresolved",
-        requestId: req.ctx?.requestId || null
-      }
-    });
-  }
-
+  const binId = req.params?.binId;
   if (!binId) {
-    return res.status(400).json({
-      error: {
-        code: "BAD_REQUEST",
-        message: "Invalid binId",
-        requestId: req.ctx?.requestId || null
-      }
+    res.status(400).json({
+      error: { code: "BAD_REQUEST", message: "Invalid binId", requestId: req.ctx?.requestId || null }
     });
+    return;
   }
 
   const bin = store.getBin(tenantId, binId);
   if (!bin) {
-    return res.status(404).json({
-      error: {
-        code: "NOT_FOUND",
-        message: "Bin not found",
-        requestId: req.ctx?.requestId || null
-      }
+    res.status(404).json({
+      error: { code: "NOT_FOUND", message: "Bin not found", requestId: req.ctx?.requestId || null }
     });
+    return;
   }
 
-  return res.json({ data: bin, meta: meta(req) });
-}
-
+  res.json({ data: bin, meta: getMeta(req) });
+};
