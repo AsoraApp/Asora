@@ -1,64 +1,60 @@
-import { PlaceholderInventoryReadStore } from "../../stores/placeholderInventoryReadStore.js";
+const { PlaceholderInventoryReadStore } = require("../../stores/placeholderInventoryReadStore.js");
 
 const store = new PlaceholderInventoryReadStore();
 
-function meta(req) {
-  return {
-    asOfUtc: new Date().toISOString(),
-    requestId: req.ctx?.requestId || null
-  };
-}
-
 const ALLOWED_FILTERS = new Set(["hubId", "binId", "itemId"]);
 
-export async function listStock(req, res) {
-  const tenantId = req.ctx?.tenantId;
-
-  if (!tenantId) {
-    return res.status(403).json({
+function tenantOr403(req, res) {
+  if (!req.ctx?.tenantId) {
+    res.status(403).json({
       error: {
         code: "TENANT_UNRESOLVED",
         message: "Tenant unresolved",
         requestId: req.ctx?.requestId || null
       }
     });
+    return null;
   }
+  return req.ctx.tenantId;
+}
 
+module.exports.listStock = async function listStock(req, res) {
+  const tenantId = tenantOr403(req, res);
+  if (!tenantId) return;
+
+  const query = req.query || {};
   const filters = {};
-  for (const key of Object.keys(req.query || {})) {
+
+  for (const key of Object.keys(query)) {
     if (!ALLOWED_FILTERS.has(key)) {
-      return res.status(400).json({
+      res.status(400).json({
         error: {
           code: "BAD_REQUEST",
           message: "Invalid stock filter",
           requestId: req.ctx?.requestId || null
         }
       });
+      return;
     }
-    filters[key] = req.query[key];
+    if (query[key]) filters[key] = query[key];
   }
 
   const rows = store.listStock(tenantId, filters);
-
   if (!rows) {
-    return res.status(404).json({
-      error: {
-        code: "NOT_FOUND",
-        message: "Stock not found",
-        requestId: req.ctx?.requestId || null
-      }
+    res.status(404).json({
+      error: { code: "NOT_FOUND", message: "Stock not found", requestId: req.ctx?.requestId || null }
     });
+    return;
   }
 
-  const asOfUtc = meta(req).asOfUtc;
-  const data = rows.map(r => ({ ...r, asOfUtc }));
+  const asOfUtc = new Date().toISOString();
+  const data = rows.map((r) => ({ ...r, asOfUtc }));
 
-  return res.json({
+  res.json({
     data,
     meta: {
       asOfUtc,
       requestId: req.ctx?.requestId || null
     }
   });
-}
-
+};
