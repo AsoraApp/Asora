@@ -60,4 +60,3 @@ This document defines the rules for the temporary inventory read store used in B
 ### Replacement Notice
 - This placeholder store exists only for B2.
 - It MUST be removed or fully replaced when ledger-backed read models are introduced.
-

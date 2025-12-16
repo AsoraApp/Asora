@@ -11,6 +11,9 @@ const { emitAudit } = require("./observability/audit");
 const inventoryRouter = require("./api/inventory");
 const rejectTenantOverride = require("./middleware/rejectTenantOverride");
 
+// B3 ledger write handler
+const { writeLedgerEventHttp } = require("./ledger/write");
+
 function readJsonBody(req) {
   return new Promise((resolve) => {
     let raw = "";
@@ -32,11 +35,16 @@ const server = http.createServer(async (req, res) => {
   const requestId = getOrCreateRequestId(req);
   res.setHeader("x-request-id", requestId);
 
-  // Parse JSON body once (for tenant override guard + any future read-only needs)
+  // Parse JSON body once
   const body = await readJsonBody(req);
   if (body === "__INVALID_JSON__") {
     res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: { code: "BAD_REQUEST", message: "Invalid JSON" }, requestId }));
+    res.end(
+      JSON.stringify({
+        error: { code: "BAD_REQUEST", message: "Invalid JSON" },
+        requestId,
+      })
+    );
     return;
   }
   req.body = body;
@@ -49,7 +57,7 @@ const server = http.createServer(async (req, res) => {
       category: "TENANT",
       eventType: "TENANT.RESOLVE_FAIL",
       requestId,
-      error: session.error
+      error: session.error,
     });
 
     res.writeHead(session.status, { "Content-Type": "application/json" });
@@ -62,16 +70,16 @@ const server = http.createServer(async (req, res) => {
     eventType: "TENANT.RESOLVE_SUCCESS",
     requestId,
     userId: session.userId,
-    tenantId: session.tenantId
+    tenantId: session.tenantId,
   });
 
   const ctx = createRequestContext({
     requestId,
     userId: session.userId,
-    tenantId: session.tenantId
+    tenantId: session.tenantId,
   });
 
-  // expose B1/B2 context in a single place
+  // expose context
   req.ctx = ctx;
 
   // ----- public route -----
@@ -81,14 +89,14 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ----- protected routes: /auth/me -----
+  // ----- protected route: /auth/me -----
   if (req.method === "GET" && req.url === "/auth/me") {
     const authResult = requireAuth(req, ctx);
     if (!authResult.ok) {
       emitAudit({
         category: "AUTH",
         eventType: "AUTH.UNAUTHENTICATED",
-        requestId
+        requestId,
       });
 
       res.writeHead(authResult.status, { "Content-Type": "application/json" });
@@ -101,21 +109,21 @@ const server = http.createServer(async (req, res) => {
       eventType: "AUTH.ACCESS_GRANTED",
       requestId,
       userId: ctx.userId,
-      tenantId: ctx.tenantId
+      tenantId: ctx.tenantId,
     });
 
     handleAuthMe(req, res, ctx);
     return;
   }
 
-  // ----- protected routes: B2 inventory (/api/*) -----
+  // ----- protected routes: /api/* -----
   if (req.url && req.url.startsWith("/api/")) {
     const authResult = requireAuth(req, ctx);
     if (!authResult.ok) {
       emitAudit({
         category: "AUTH",
         eventType: "AUTH.UNAUTHENTICATED",
-        requestId
+        requestId,
       });
 
       res.writeHead(authResult.status, { "Content-Type": "application/json" });
@@ -123,7 +131,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // tenant override guard (fail closed)
+    // tenant override guard
     const guard = rejectTenantOverride(req, res);
     if (!guard.ok) {
       res.writeHead(guard.status, { "Content-Type": "application/json" });
@@ -131,12 +139,23 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // delegate to inventory router (http-style)
+    // ----- B3 ledger write endpoint -----
+    if (req.method === "POST" && req.url === "/api/inventory/ledger/events") {
+      const handled = writeLedgerEventHttp(req, res, ctx, requestId);
+      if (handled) return;
+    }
+
+    // ----- delegate to B2 inventory router -----
     const handled = inventoryRouter(req, res);
     if (handled) return;
 
     res.writeHead(404, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: { code: "NOT_FOUND", message: "Not found" }, requestId }));
+    res.end(
+      JSON.stringify({
+        error: { code: "NOT_FOUND", message: "Not found" },
+        requestId,
+      })
+    );
     return;
   }
 
