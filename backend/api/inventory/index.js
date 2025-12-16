@@ -1,16 +1,14 @@
-import express from "express";
+const hubs = require("./hubs.routes");
+const bins = require("./bins.routes");
+const items = require("./items.routes");
+const stock = require("./stock.routes");
 
-import hubsRoutes from "./hubs.routes.js";
-import binsRoutes from "./bins.routes.js";
-import itemsRoutes from "./items.routes.js";
-import stockRoutes from "./stock.routes.js";
-
-const router = express.Router();
-
-router.use(hubsRoutes);
-router.use(binsRoutes);
-router.use(itemsRoutes);
-router.use(stockRoutes);
-
-export default router;
-
+module.exports = function inventoryRouter(req, res) {
+  return (
+    hubs(req, res) ||
+    bins(req, res) ||
+    items(req, res) ||
+    stock(req, res) ||
+    false
+  );
+};
