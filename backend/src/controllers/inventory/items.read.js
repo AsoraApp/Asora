@@ -1,12 +1,26 @@
-import { PlaceholderInventoryReadStore } from "../../stores/placeholderInventoryReadStore.js";
+const { PlaceholderInventoryReadStore } = require("../../stores/placeholderInventoryReadStore.js");
 
 const store = new PlaceholderInventoryReadStore();
 
-function meta(req) {
+function getMeta(req) {
   return {
     asOfUtc: new Date().toISOString(),
     requestId: req.ctx?.requestId || null
   };
+}
+
+function tenantOr403(req, res) {
+  if (!req.ctx?.tenantId) {
+    res.status(403).json({
+      error: {
+        code: "TENANT_UNRESOLVED",
+        message: "Tenant unresolved",
+        requestId: req.ctx?.requestId || null
+      }
+    });
+    return null;
+  }
+  return req.ctx.tenantId;
 }
 
 function isValidSku(sku) {
@@ -16,108 +30,63 @@ function isValidSku(sku) {
   return true;
 }
 
-export async function listItems(req, res) {
-  const tenantId = req.ctx?.tenantId;
-
-  if (!tenantId) {
-    return res.status(403).json({
-      error: {
-        code: "TENANT_UNRESOLVED",
-        message: "Tenant unresolved",
-        requestId: req.ctx?.requestId || null
-      }
-    });
-  }
+module.exports.listItems = async function listItems(req, res) {
+  const tenantId = tenantOr403(req, res);
+  if (!tenantId) return;
 
   const items = store.listItems(tenantId);
   if (!items) {
-    return res.status(404).json({
-      error: {
-        code: "NOT_FOUND",
-        message: "Items not found",
-        requestId: req.ctx?.requestId || null
-      }
+    res.status(404).json({
+      error: { code: "NOT_FOUND", message: "Items not found", requestId: req.ctx?.requestId || null }
     });
+    return;
   }
 
-  return res.json({ data: items, meta: meta(req) });
-}
+  res.json({ data: items, meta: getMeta(req) });
+};
 
-export async function getItem(req, res) {
-  const tenantId = req.ctx?.tenantId;
-  const { itemId } = req.params;
+module.exports.getItem = async function getItem(req, res) {
+  const tenantId = tenantOr403(req, res);
+  if (!tenantId) return;
 
-  if (!tenantId) {
-    return res.status(403).json({
-      error: {
-        code: "TENANT_UNRESOLVED",
-        message: "Tenant unresolved",
-        requestId: req.ctx?.requestId || null
-      }
-    });
-  }
-
+  const itemId = req.params?.itemId;
   if (!itemId) {
-    return res.status(400).json({
-      error: {
-        code: "BAD_REQUEST",
-        message: "Invalid itemId",
-        requestId: req.ctx?.requestId || null
-      }
+    res.status(400).json({
+      error: { code: "BAD_REQUEST", message: "Invalid itemId", requestId: req.ctx?.requestId || null }
     });
+    return;
   }
 
   const item = store.getItem(tenantId, itemId);
   if (!item) {
-    return res.status(404).json({
-      error: {
-        code: "NOT_FOUND",
-        message: "Item not found",
-        requestId: req.ctx?.requestId || null
-      }
+    res.status(404).json({
+      error: { code: "NOT_FOUND", message: "Item not found", requestId: req.ctx?.requestId || null }
     });
+    return;
   }
 
-  return res.json({ data: item, meta: meta(req) });
-}
+  res.json({ data: item, meta: getMeta(req) });
+};
 
-export async function getItemBySku(req, res) {
-  const tenantId = req.ctx?.tenantId;
-  const { sku } = req.params;
+module.exports.getItemBySku = async function getItemBySku(req, res) {
+  const tenantId = tenantOr403(req, res);
+  if (!tenantId) return;
 
-  if (!tenantId) {
-    return res.status(403).json({
-      error: {
-        code: "TENANT_UNRESOLVED",
-        message: "Tenant unresolved",
-        requestId: req.ctx?.requestId || null
-      }
-    });
-  }
-
+  const sku = req.params?.sku;
   if (!isValidSku(sku)) {
-    return res.status(400).json({
-      error: {
-        code: "BAD_REQUEST",
-        message: "Invalid SKU format",
-        requestId: req.ctx?.requestId || null
-      }
+    res.status(400).json({
+      error: { code: "BAD_REQUEST", message: "Invalid SKU format", requestId: req.ctx?.requestId || null }
     });
+    return;
   }
 
-  const normalizedSku = sku.toUpperCase();
-  const item = store.getItemBySku(tenantId, normalizedSku);
-
+  const item = store.getItemBySku(tenantId, sku.toUpperCase());
   if (!item) {
-    return res.status(404).json({
-      error: {
-        code: "NOT_FOUND",
-        message: "Item not found",
-        requestId: req.ctx?.requestId || null
-      }
+    res.status(404).json({
+      error: { code: "NOT_FOUND", message: "Item not found", requestId: req.ctx?.requestId || null }
     });
+    return;
   }
 
-  return res.json({ data: item, meta: meta(req) });
-}
-
+  res.json({ data: item, meta: getMeta(req) });
+};
