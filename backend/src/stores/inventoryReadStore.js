@@ -1,12 +1,9 @@
 /*
   Inventory Read Store Contract (B2)
-
-  All functions are READ-ONLY.
-  All functions are tenant-scoped.
-  tenantId MUST be the first argument for every call.
+  READ-ONLY. Tenant-scoped. No mutations.
 */
 
-export class InventoryReadStore {
+class InventoryReadStore {
   listHubs(tenantId) {
     throw new Error("listHubs not implemented");
   }
@@ -39,3 +36,5 @@ export class InventoryReadStore {
     throw new Error("listStock not implemented");
   }
 }
+
+module.exports = { InventoryReadStore };
