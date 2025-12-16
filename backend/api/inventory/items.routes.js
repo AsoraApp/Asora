@@ -1,4 +1,4 @@
-const { listItems, getItem, getItemBySku } = require("../../controllers/inventory/items.read.js");
+const { listStock } = require("../../controllers/inventory/stock.read.js");
 
 function enhanceRes(req, res) {
   if (typeof res.status === "function" && typeof res.json === "function") return;
@@ -29,38 +29,18 @@ function parseUrl(req) {
   return { pathname: u.pathname, query };
 }
 
-module.exports = function itemsRoutes(req, res) {
+module.exports = function stockRoutes(req, res) {
   const { pathname, query } = parseUrl(req);
 
   enhanceRes(req, res);
   req.query = query;
   req.params = req.params || {};
 
-  // GET /api/items
-  if (req.method === "GET" && pathname === "/api/items") {
+  // GET /api/stock
+  if (req.method === "GET" && pathname === "/api/stock") {
     req.params = {};
-    listItems(req, res);
+    listStock(req, res);
     return true;
-  }
-
-  // GET /api/items/by-sku/:sku
-  {
-    const m = pathname.match(/^\/api\/items\/by-sku\/([^/]+)$/);
-    if (req.method === "GET" && m) {
-      req.params = { sku: decodeURIComponent(m[1]) };
-      getItemBySku(req, res);
-      return true;
-    }
-  }
-
-  // GET /api/items/:itemId
-  {
-    const m = pathname.match(/^\/api\/items\/([^/]+)$/);
-    if (req.method === "GET" && m) {
-      req.params = { itemId: decodeURIComponent(m[1]) };
-      getItem(req, res);
-      return true;
-    }
   }
 
   return false;
