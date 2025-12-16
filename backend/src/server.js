@@ -2,26 +2,41 @@ const http = require("http");
 
 const { getOrCreateRequestId } = require("../observability/requestId");
 const { createRequestContext } = require("../domain/requestContext");
+const { handleAuthMe } = require("../api/auth");
 
 const server = http.createServer((req, res) => {
-    const requestId = getOrCreateRequestId(req);
+  // ----- request id -----
+  const requestId = getOrCreateRequestId(req);
   res.setHeader("x-request-id", requestId);
 
-  // B1 plumbing: auth + tenant will populate these later
+  // ----- request context (B1 plumbing only) -----
+  // auth + tenant enforcement will replace these placeholders
   const ctx = createRequestContext({
     requestId,
     userId: "anonymous",
     tenantId: "unresolved"
   });
 
-  if (req.url === "/health") {
+  // ----- routing -----
+  if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok" }));
+    res.end(JSON.stringify({ status: "ok", requestId }));
     return;
   }
 
-  res.writeHead(404);
-  res.end();
+  if (req.method === "GET" && req.url === "/auth/me") {
+    handleAuthMe(req, res, ctx);
+    return;
+  }
+
+  // ----- fallback -----
+  res.writeHead(404, { "Content-Type": "application/json" });
+  res.end(
+    JSON.stringify({
+      error: "NOT_FOUND",
+      requestId
+    })
+  );
 });
 
 server.listen(3000, () => {
