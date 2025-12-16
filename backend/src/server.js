@@ -3,28 +3,40 @@ const http = require("http");
 const { getOrCreateRequestId } = require("../observability/requestId");
 const { createRequestContext } = require("../domain/requestContext");
 const { handleAuthMe } = require("../api/auth");
+const { requireAuth } = require("../auth/requireAuth");
 
 const server = http.createServer((req, res) => {
-  // ----- request id -----
   const requestId = getOrCreateRequestId(req);
   res.setHeader("x-request-id", requestId);
 
-  // ----- request context (B1 plumbing only) -----
-  // auth + tenant enforcement will replace these placeholders
+  // B1 plumbing only — real auth will populate these later
   const ctx = createRequestContext({
     requestId,
     userId: "anonymous",
     tenantId: "unresolved"
   });
 
-  // ----- routing -----
+  // ----- public route -----
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok", requestId }));
     return;
   }
 
+  // ----- protected routes -----
   if (req.method === "GET" && req.url === "/auth/me") {
+    const authResult = requireAuth(req, ctx);
+    if (!authResult.ok) {
+      res.writeHead(authResult.status, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: authResult.error,
+          requestId
+        })
+      );
+      return;
+    }
+
     handleAuthMe(req, res, ctx);
     return;
   }
