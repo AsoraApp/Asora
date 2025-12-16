@@ -1,5 +1,4 @@
-const { listHubs, getHub } = require("../../controllers/inventory/hubs.read.js");
-const { listBinsByHub } = require("../../controllers/inventory/bins.read.js");
+const { getBin } = require("../../controllers/inventory/bins.read.js");
 
 function enhanceRes(req, res) {
   if (typeof res.status === "function" && typeof res.json === "function") return;
@@ -30,36 +29,19 @@ function parseUrl(req) {
   return { pathname: u.pathname, query };
 }
 
-module.exports = function hubsRoutes(req, res) {
+module.exports = function binsRoutes(req, res) {
   const { pathname, query } = parseUrl(req);
 
   enhanceRes(req, res);
   req.query = query;
   req.params = req.params || {};
 
-  // GET /api/hubs
-  if (req.method === "GET" && pathname === "/api/hubs") {
-    req.params = {};
-    listHubs(req, res);
-    return true;
-  }
-
-  // GET /api/hubs/:hubId
+  // GET /api/bins/:binId
   {
-    const m = pathname.match(/^\/api\/hubs\/([^/]+)$/);
+    const m = pathname.match(/^\/api\/bins\/([^/]+)$/);
     if (req.method === "GET" && m) {
-      req.params = { hubId: decodeURIComponent(m[1]) };
-      getHub(req, res);
-      return true;
-    }
-  }
-
-  // GET /api/hubs/:hubId/bins
-  {
-    const m = pathname.match(/^\/api\/hubs\/([^/]+)\/bins$/);
-    if (req.method === "GET" && m) {
-      req.params = { hubId: decodeURIComponent(m[1]) };
-      listBinsByHub(req, res);
+      req.params = { binId: decodeURIComponent(m[1]) };
+      getBin(req, res);
       return true;
     }
   }
