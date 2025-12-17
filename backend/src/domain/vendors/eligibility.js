@@ -1,102 +1,47 @@
-function isIsoDateString(s) {
-  return typeof s === "string" && !Number.isNaN(Date.parse(s));
+const { loadTenantCollection } = require("../../storage/jsonStore");
+
+/**
+ * B5 eligibility gate (fail-closed):
+ * - If vendor does not exist -> ineligible
+ * - If eligibility cannot be determined from stored compliance facts -> ineligible
+ *
+ * Storage expectations (tenant-scoped):
+ * - vendors.json: [{ vendorId, status, ... }]
+ * - vendor_compliance.json: [{ vendorId, eligible, status, ... }]
+ *
+ * NOTE: If your B5 implementation uses a different filename, update it here only.
+ */
+function getVendorRecord(tenantId, vendorId) {
+  const vendors = loadTenantCollection(tenantId, "vendors.json", []);
+  return (vendors || []).find((v) => String(v.vendorId) === String(vendorId)) || null;
 }
 
-function toMillisOrNull(s) {
-  if (!isIsoDateString(s)) return null;
-  return Date.parse(s);
+function getVendorCompliance(tenantId, vendorId) {
+  const compliance = loadTenantCollection(tenantId, "vendor_compliance.json", []);
+  return (compliance || []).find((c) => String(c.vendorId) === String(vendorId)) || null;
 }
 
-function isVendorEligible(vendor, tenantRules, nowUtcIso) {
-  const nowIso = typeof nowUtcIso === "string" ? nowUtcIso : new Date().toISOString();
-  const nowMs = toMillisOrNull(nowIso);
+function isVendorEligible(tenantId, vendorId) {
+  if (!tenantId || !vendorId) return false;
 
-  const reasons = [];
+  const v = getVendorRecord(tenantId, vendorId);
+  if (!v) return false;
 
-  // Fail-closed on missing context
-  if (!vendor || typeof vendor !== "object") {
-    return { eligible: false, reasons: ["VENDOR_MISSING"], asOfUtc: nowIso };
-  }
-  if (!tenantRules || typeof tenantRules !== "object") {
-    return { eligible: false, reasons: ["RULES_MISSING"], asOfUtc: nowIso };
-  }
-  if (!nowMs) {
-    return { eligible: false, reasons: ["NOW_UTC_INVALID"], asOfUtc: nowIso };
-  }
+  // Vendor record must be ACTIVE (or equivalent) to proceed (fail-closed)
+  if (String(v.status || "").toUpperCase() !== "ACTIVE") return false;
 
-  if (vendor.status !== "ACTIVE") {
-    reasons.push("VENDOR_STATUS_NOT_ACTIVE");
-  }
+  const c = getVendorCompliance(tenantId, vendorId);
+  if (!c) return false;
 
-  // Evidence container expected on vendor (passed in by caller) or separate.
-  const evidence = vendor.complianceEvidence || null;
+  // Eligibility must be explicitly true (fail-closed)
+  if (c.eligible === true) return true;
 
-  function requireReceived(doc, missingCode, invalidCode) {
-    if (!doc) return { ok: false, reason: missingCode };
-    if (!doc.receivedAtUtc || !isIsoDateString(doc.receivedAtUtc)) {
-      return { ok: false, reason: invalidCode };
-    }
-    return { ok: true };
-  }
+  // Alternate explicit status allowlist (fail-closed otherwise)
+  if (String(c.status || "").toUpperCase() === "ELIGIBLE") return true;
 
-  function requireNotExpired(doc, missingCode, invalidCode, expiredCode) {
-    if (!doc) return { ok: false, reason: missingCode };
-    if (!doc.expiresAtUtc || !isIsoDateString(doc.expiresAtUtc)) {
-      return { ok: false, reason: invalidCode };
-    }
-    const expMs = toMillisOrNull(doc.expiresAtUtc);
-    if (!expMs) return { ok: false, reason: invalidCode };
-    if (expMs <= nowMs) return { ok: false, reason: expiredCode };
-    return { ok: true };
-  }
-
-  // Insurance
-  if (tenantRules.insuranceRequired) {
-    const doc = evidence && evidence.insurance ? evidence.insurance : null;
-
-    const rec = requireReceived(doc, "INSURANCE_REQUIRED_MISSING", "INSURANCE_RECEIVED_AT_INVALID");
-    if (!rec.ok) reasons.push(rec.reason);
-
-    const exp = requireNotExpired(
-      doc,
-      "INSURANCE_REQUIRED_MISSING",
-      "INSURANCE_EXPIRES_AT_INVALID",
-      "INSURANCE_EXPIRED"
-    );
-    if (!exp.ok) reasons.push(exp.reason);
-  }
-
-  // W9
-  if (tenantRules.w9Required) {
-    const doc = evidence && evidence.w9 ? evidence.w9 : null;
-    const rec = requireReceived(doc, "W9_REQUIRED_MISSING", "W9_RECEIVED_AT_INVALID");
-    if (!rec.ok) reasons.push(rec.reason);
-  }
-
-  // License
-  if (tenantRules.licenseRequired) {
-    const doc = evidence && evidence.license ? evidence.license : null;
-
-    const rec = requireReceived(doc, "LICENSE_REQUIRED_MISSING", "LICENSE_RECEIVED_AT_INVALID");
-    if (!rec.ok) reasons.push(rec.reason);
-
-    const exp = requireNotExpired(
-      doc,
-      "LICENSE_REQUIRED_MISSING",
-      "LICENSE_EXPIRES_AT_INVALID",
-      "LICENSE_EXPIRED"
-    );
-    if (!exp.ok) reasons.push(exp.reason);
-  }
-
-  // Deduplicate deterministically
-  const uniq = Array.from(new Set(reasons)).sort();
-
-  return {
-    eligible: uniq.length === 0,
-    reasons: uniq,
-    asOfUtc: nowIso,
-  };
+  return false;
 }
 
-module.exports = { isVendorEligible };
+module.exports = {
+  isVendorEligible,
+};

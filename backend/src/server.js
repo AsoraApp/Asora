@@ -1,5 +1,5 @@
-// backend/src/server.js
 const http = require("http");
+const url = require("url");
 
 const { getOrCreateRequestId } = require("./observability/requestId");
 const { createRequestContext } = require("./domain/requestContext");
@@ -8,9 +8,10 @@ const { requireAuth } = require("./auth/requireAuth");
 const { resolveSession } = require("./auth/session");
 const { emitAudit } = require("./observability/audit");
 
+const rejectTenantOverride = require("./middleware/rejectTenantOverride");
+
 // B2 inventory router + guards
 const inventoryRouter = require("./api/inventory");
-const rejectTenantOverride = require("./middleware/rejectTenantOverride");
 
 // B3 ledger write handler
 const { writeLedgerEventHttp } = require("./ledger/write");
@@ -19,10 +20,13 @@ const { writeLedgerEventHttp } = require("./ledger/write");
 const vendorsRouter = require("./api/vendors");
 const complianceRouter = require("./api/compliance");
 
-// B6 procurement lifecycle
-const requisitionsRouter = require("./api/requisitions");
-const purchaseOrdersRouter = require("./api/purchaseOrders");
-const receiptsRouter = require("./api/receipts");
+// B6 procurement lifecycle (existing from Phase 7/B6)
+const procurementRouter = require("./api/procurement");
+
+// B7 RFQs + Quotes + Comparison + Selection + PO from selected quote
+const rfqsRouter = require("./api/rfqsRouter");
+const quotesRouter = require("./api/quotes");
+const poFromSelectedQuoteRouter = require("./api/purchaseOrdersFromSelectedQuote");
 
 function readJsonBody(req) {
   return new Promise((resolve) => {
@@ -41,118 +45,101 @@ function readJsonBody(req) {
   });
 }
 
-function sendJson(res, status, obj) {
-  res.statusCode = status;
+function sendJson(res, statusCode, body) {
+  res.statusCode = statusCode;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify(obj));
+  res.end(JSON.stringify(body));
 }
 
 function notFound(res) {
-  return sendJson(res, 404, { error: { code: "NOT_FOUND", message: "Not found" } });
+  return sendJson(res, 404, { error: "NOT_FOUND" });
+}
+
+function methodNotAllowed(res) {
+  return sendJson(res, 405, { error: "METHOD_NOT_ALLOWED" });
 }
 
 const server = http.createServer(async (req, res) => {
-  const requestId = getOrCreateRequestId(req);
-  res.setHeader("x-request-id", requestId);
+  const requestId = getOrCreateRequestId(req, res);
 
-  const url = new URL(req.url, "http://localhost");
-  const path = url.pathname;
+  const parsed = url.parse(req.url, true);
+  const path = parsed.pathname || "/";
+  const method = (req.method || "GET").toUpperCase();
 
-  // Parse body once; handlers may use ctx.body
-  const body = await readJsonBody(req);
+  // Body parse (only if needed)
+  let body = null;
+  if (method !== "GET" && method !== "HEAD") {
+    body = await readJsonBody(req);
+    if (body === "__INVALID_JSON__") {
+      return sendJson(res, 400, { error: "INVALID_JSON", code: "BADC-JSON" });
+    }
+  }
 
+  // Create deterministic request context (tenant derived from session)
   const ctx = createRequestContext({
     requestId,
-    method: req.method,
-    path,
-    url,
     nowUtc: new Date().toISOString(),
+    method,
+    path,
+    query: parsed.query || {},
     body,
-    session: null,
-    tenantId: null,
-    userId: null,
-    roleIds: [],
   });
 
-  // Public auth endpoint(s)
-  if (path === "/api/auth/me") {
-    return handleAuthMe(req, res, ctx);
-  }
-
-  // Auth gate
-  const session = resolveSession(req);
-  ctx.session = session;
   try {
-    requireAuth(ctx);
-  } catch (e) {
-    emitAudit(ctx, {
-      eventCategory: "AUTH",
-      eventType: "AUTH_DENY",
-      decision: "DENY",
-      reasonCode: e.code || "UNAUTHORIZED",
-      factsSnapshot: { path, method: req.method },
-    });
-    return sendJson(res, 401, { error: { code: e.code || "UNAUTHORIZED", message: e.message } });
+    // Reject any attempt to override tenant (fail-closed)
+    if (rejectTenantOverride) {
+      const rejected = rejectTenantOverride(req, res);
+      if (rejected) return;
+    }
+
+    // Health-ish / auth endpoint
+    if (path === "/api/auth/me") {
+      if (method !== "GET") return methodNotAllowed(res);
+      return handleAuthMe(ctx, req, res);
+    }
+
+    // Require auth + session-derived tenant for everything else under /api
+    if (path.startsWith("/api/")) {
+      const authOk = await requireAuth(ctx, req, res, resolveSession);
+      if (!authOk) return;
+
+      // Routers are responsible for tenant-scoped enforcement via ctx.tenantId
+      if (inventoryRouter && inventoryRouter(ctx, req, res)) return;
+      if (vendorsRouter && vendorsRouter(ctx, req, res)) return;
+      if (complianceRouter && complianceRouter(ctx, req, res)) return;
+      if (procurementRouter && procurementRouter(ctx, req, res)) return;
+
+      if (rfqsRouter && rfqsRouter(ctx, req, res)) return;
+      if (quotesRouter && quotesRouter(ctx, req, res)) return;
+      if (poFromSelectedQuoteRouter && poFromSelectedQuoteRouter(ctx, req, res)) return;
+
+      // Ledger write endpoint (B3)
+      if (path.startsWith("/api/ledger")) {
+        return writeLedgerEventHttp(ctx, req, res);
+      }
+
+      return notFound(res);
+    }
+
+    return notFound(res);
+  } catch (err) {
+    // Fail-closed; emit auditable error event
+    try {
+      emitAudit(ctx, {
+        eventCategory: "SYSTEM",
+        eventType: "UNHANDLED_ERROR",
+        objectType: "http_request",
+        objectId: `${method} ${path}`,
+        decision: "DENY",
+        reasonCode: "UNHANDLED_ERROR",
+        factsSnapshot: {
+          message: err && err.message ? String(err.message) : "unknown",
+        },
+      });
+    } catch (_) {}
+
+    return sendJson(res, 500, { error: "INTERNAL_ERROR", code: "INT-ERR" });
   }
-
-  // Tenant is session-derived only (fail-closed)
-  if (!session || !session.tenantId) {
-    emitAudit(ctx, {
-      eventCategory: "TENANT",
-      eventType: "TENANT_DENY",
-      decision: "DENY",
-      reasonCode: "TENANT_UNRESOLVED",
-      factsSnapshot: { path, method: req.method },
-    });
-    return sendJson(res, 403, {
-      error: { code: "TENANT_UNRESOLVED", message: "Tenant could not be resolved" },
-    });
-  }
-
-  ctx.tenantId = session.tenantId;
-  ctx.userId = session.userId || null;
-  ctx.roleIds = Array.isArray(session.roleIds) ? session.roleIds : [];
-
-  // Reject any client attempt to override tenant
-  try {
-    rejectTenantOverride(req);
-  } catch (e) {
-    emitAudit(ctx, {
-      eventCategory: "TENANT",
-      eventType: "TENANT_OVERRIDE_REJECT",
-      decision: "DENY",
-      reasonCode: e.code || "TENANT_OVERRIDE",
-      factsSnapshot: { path, method: req.method },
-    });
-    return sendJson(res, 403, { error: { code: e.code || "TENANT_OVERRIDE", message: e.message } });
-  }
-
-  // Invalid JSON body (fail-closed)
-  if (ctx.body === "__INVALID_JSON__") {
-    emitAudit(ctx, {
-      eventCategory: "API",
-      eventType: "INVALID_JSON",
-      decision: "DENY",
-      reasonCode: "INVALID_JSON",
-      factsSnapshot: { path, method: req.method },
-    });
-    return sendJson(res, 400, {
-      error: { code: "INVALID_JSON", message: "Request body must be valid JSON" },
-    });
-  }
-
-  // Route delegation (handlers return true if handled)
-  if (await inventoryRouter(req, res, ctx)) return;
-  if (await writeLedgerEventHttp(req, res, ctx)) return;
-
-  if (await vendorsRouter(req, res, ctx)) return;
-  if (await complianceRouter(req, res, ctx)) return;
-
-  if (await requisitionsRouter(req, res, ctx)) return;
-  if (await purchaseOrdersRouter(req, res, ctx)) return;
-  if (await receiptsRouter(req, res, ctx)) return;
-
-  return notFound(res);
 });
 
 module.exports = server;
