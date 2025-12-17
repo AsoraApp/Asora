@@ -7,7 +7,12 @@ function json(statusCode, body, baseHeaders) {
 export function authMeFetch(ctx, baseHeaders) {
   return json(
     200,
-    { ok: true, tenantId: ctx.tenantId || null, userId: ctx.userId || null, requestId: ctx.requestId || null },
+    {
+      ok: true,
+      tenantId: ctx?.tenantId ?? null,
+      userId: ctx?.userId ?? null,
+      requestId: ctx?.requestId ?? null
+    },
     baseHeaders
   );
 }
