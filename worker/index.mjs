@@ -1,7 +1,4 @@
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-
-const { handleFetch } = require("../backend/src/worker/handleFetch");
+import handleFetch from "../backend/src/worker/handleFetch.mjs";
 
 export default {
   async fetch(request, env, ctx) {
