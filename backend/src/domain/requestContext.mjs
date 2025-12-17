@@ -1,7 +1,6 @@
 /**
- * Deterministic, fail-closed tenant resolution for MVP.
- *
- * Token formats accepted:
+ * Deterministic MVP tenant resolution.
+ * Token formats:
  * - tenant:<tenantId>
  * - tenant:<tenantId>|user:<userId>
  */
@@ -18,10 +17,4 @@ export function createRequestContext({ requestId, session }) {
   if (typeof token !== "string") return ctx;
 
   const parts = token.split("|");
-  for (const p of parts) {
-    if (p.startsWith("tenant:")) ctx.tenantId = p.slice("tenant:".length);
-    if (p.startsWith("user:")) ctx.userId = p.slice("user:".length);
-  }
-
-  return ctx;
-}
+  for
