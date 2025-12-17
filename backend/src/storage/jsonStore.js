@@ -1,4 +1,18 @@
+/**
+ * Cloudflare Worker-compatible JSON store.
+ * Tenant-scoped collections stored in KV as JSON blobs.
+ *
+ * Determinism rules:
+ * - Keys are stable: `${tenantId}::${fileName}`
+ * - Writes overwrite the whole collection deterministically
+ * - Fail-closed when tenantId missing
+ *
+ * Requires Worker env binding: ASORA_KV
+ */
+
 function kvFromEnv() {
+  // In Workers, env is accessed in the fetch handler. We attach it to globalThis.
+  // Fail-closed if not bound.
   const kv = globalThis.__ASORA_ENV__ && globalThis.__ASORA_ENV__.ASORA_KV;
   return kv || null;
 }
@@ -9,7 +23,7 @@ function makeKey(tenantId, fileName) {
   return `${String(tenantId)}::${fileName}`;
 }
 
-export async function loadTenantCollection(tenantId, fileName, defaultValue) {
+async function loadTenantCollection(tenantId, fileName, defaultValue) {
   const kv = kvFromEnv();
   const key = makeKey(tenantId, fileName);
   if (!kv) throw new Error("KV_NOT_BOUND");
@@ -21,16 +35,23 @@ export async function loadTenantCollection(tenantId, fileName, defaultValue) {
   try {
     return JSON.parse(raw);
   } catch {
+    // Fail-closed on corrupt data: return defaultValue rather than guessing.
     return defaultValue;
   }
 }
 
-export async function saveTenantCollection(tenantId, fileName, value) {
+async function saveTenantCollection(tenantId, fileName, value) {
   const kv = kvFromEnv();
   const key = makeKey(tenantId, fileName);
   if (!kv) throw new Error("KV_NOT_BOUND");
   if (!tenantId) throw new Error("TENANT_NOT_RESOLVED");
   if (!key) throw new Error("INVALID_STORAGE_KEY");
 
-  await kv.put(key, JSON.stringify(value, null, 2));
+  const raw = JSON.stringify(value, null, 2);
+  await kv.put(key, raw);
 }
+
+module.exports = {
+  loadTenantCollection,
+  saveTenantCollection,
+};
