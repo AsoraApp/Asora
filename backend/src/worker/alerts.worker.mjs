@@ -1,4 +1,4 @@
-import { loadTenantCollection, saveTenantCollection } from "../storage/jsonStore.mjs";
+import { loadTenantCollection, saveTenantCollection } from "../storage/jsonStore.worker.mjs";
 import { nowUtcIso } from "../domain/time/utc.mjs";
 import { emitAudit } from "../observability/audit.mjs";
 import { validateAlertRuleInput } from "../domain/alerts/validateRule.mjs";
@@ -30,9 +30,8 @@ export async function alertsFetchRouter(ctx, request, baseHeaders) {
   const method = (request.method || "GET").toUpperCase();
 
   if (!pathname.startsWith("/api/alerts")) return null;
-  if (!ctx || !ctx.tenantId) return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
+  if (!ctx?.tenantId) return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
 
-  // GET /api/alerts/rules
   if (method === "GET" && pathname === "/api/alerts/rules") {
     const rules = (await loadTenantCollection(ctx.tenantId, "alert_rules", [])) || [];
     const out = rules.filter((r) => !r.deletedAtUtc);
@@ -50,7 +49,6 @@ export async function alertsFetchRouter(ctx, request, baseHeaders) {
     return json(200, { rules: out }, baseHeaders);
   }
 
-  // POST /api/alerts/rules
   if (method === "POST" && pathname === "/api/alerts/rules") {
     const body = await readJson(request);
     if (body === "__INVALID_JSON__") return json(400, { error: "BAD_REQUEST", code: "INVALID_JSON", details: null }, baseHeaders);
@@ -92,7 +90,6 @@ export async function alertsFetchRouter(ctx, request, baseHeaders) {
     return json(201, { rule }, baseHeaders);
   }
 
-  // GET /api/alerts
   if (method === "GET" && pathname === "/api/alerts") {
     const status = (u.searchParams.get("status") || "").toUpperCase() || null;
     if (status && !["OPEN", "ACKNOWLEDGED", "CLOSED"].includes(status)) {
