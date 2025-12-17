@@ -116,3 +116,12 @@ export default {
     }
   },
 };
+
+// ADD import
+import adminTenantPlanRouter from "./api/admin/tenantPlan.worker.mjs";
+
+// ADD route block (admin-only)
+if (path === "/api/admin/tenant/plan") {
+  const resp = await dispatchRouter(adminTenantPlanRouter, ctx, req, baseHeaders, cfctx);
+  return resp || notFound(baseHeaders);
+}
