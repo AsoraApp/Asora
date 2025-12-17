@@ -24,6 +24,14 @@ async function readJson(request) {
   }
 }
 
+function waitUntilEval(cfctx, p) {
+  try {
+    if (cfctx && typeof cfctx.waitUntil === "function") cfctx.waitUntil(p);
+  } catch {
+    // swallow
+  }
+}
+
 export async function alertsFetchRouter(ctx, request, baseHeaders, cfctx) {
   const u = new URL(request.url);
   const pathname = parsePath(u.pathname);
@@ -32,7 +40,17 @@ export async function alertsFetchRouter(ctx, request, baseHeaders, cfctx) {
   if (!pathname.startsWith("/api/alerts")) return null;
   if (!ctx?.tenantId) return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
 
-  // DEV (browser-friendly): create LOW_STOCK ITEM rule via query params
+  // DEV: manual evaluation trigger (browser-friendly)
+  // GET /api/alerts/dev/evaluate
+  if (method === "GET" && pathname === "/api/alerts/dev/evaluate") {
+    const p = evaluateAlertsOnce(ctx.tenantId, "DEV_MANUAL_TRIGGER");
+    waitUntilEval(cfctx, p);
+    // return immediate response (best-effort observer)
+    return json(200, { ok: true, scheduled: true }, baseHeaders);
+  }
+
+  // DEV: create LOW_STOCK ITEM rule via query params
+  // GET /api/alerts/rules/dev-low-stock?itemId=item-1&thresholdQty=5&enabled=true&note=...
   if (method === "GET" && pathname === "/api/alerts/rules/dev-low-stock") {
     const itemId = u.searchParams.get("itemId");
     const thresholdQtyRaw = u.searchParams.get("thresholdQty");
@@ -83,13 +101,8 @@ export async function alertsFetchRouter(ctx, request, baseHeaders, cfctx) {
       factsSnapshot: { type: rule.type, scope: rule.scope, enabled: rule.enabled, itemId }
     });
 
-    // Non-blocking evaluation, reliable via waitUntil
-    try {
-      const p = evaluateAlertsOnce(ctx.tenantId, "DEV_RULE_CREATED");
-      if (cfctx && typeof cfctx.waitUntil === "function") cfctx.waitUntil(p);
-    } catch {
-      // swallow
-    }
+    // Evaluate against existing committed facts (ledger already has events)
+    waitUntilEval(cfctx, evaluateAlertsOnce(ctx.tenantId, "DEV_RULE_CREATED"));
 
     return json(201, { rule }, baseHeaders);
   }
@@ -150,14 +163,7 @@ export async function alertsFetchRouter(ctx, request, baseHeaders, cfctx) {
       factsSnapshot: { type: rule.type, scope: rule.scope, enabled: rule.enabled }
     });
 
-    // Non-blocking evaluation, reliable via waitUntil
-    try {
-      const p = evaluateAlertsOnce(ctx.tenantId, "RULE_CREATED");
-      if (cfctx && typeof cfctx.waitUntil === "function") cfctx.waitUntil(p);
-    } catch {
-      // swallow
-    }
-
+    waitUntilEval(cfctx, evaluateAlertsOnce(ctx.tenantId, "RULE_CREATED"));
     return json(201, { rule }, baseHeaders);
   }
 
