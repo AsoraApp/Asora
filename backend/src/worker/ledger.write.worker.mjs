@@ -1,7 +1,7 @@
 import { loadTenantCollection, saveTenantCollection } from "../storage/jsonStore.worker.mjs";
 import { nowUtcIso } from "../domain/time/utc.mjs";
 import { emitAudit } from "../observability/audit.mjs";
-import { evaluateAlertsAsync } from "../domain/alerts/evaluate.mjs";
+import { evaluateAlertsOnce } from "../domain/alerts/evaluate.mjs";
 
 function json(statusCode, body, baseHeaders) {
   const h = new Headers(baseHeaders || {});
@@ -9,7 +9,7 @@ function json(statusCode, body, baseHeaders) {
   return new Response(JSON.stringify(body), { status: statusCode, headers: h });
 }
 
-export async function writeLedgerEventFromJson(ctx, input, baseHeaders) {
+export async function writeLedgerEventFromJson(ctx, input, baseHeaders, cfctx) {
   if (!ctx?.tenantId) {
     return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
   }
@@ -58,8 +58,13 @@ export async function writeLedgerEventFromJson(ctx, input, baseHeaders) {
     factsSnapshot: { itemId: event.itemId, qtyDelta: event.qtyDelta, hubId: event.hubId, binId: event.binId }
   });
 
-  // observer-only, non-blocking
-  evaluateAlertsAsync(ctx.tenantId, "LEDGER_EVENT_COMMITTED");
+  // Non-blocking alert evaluation: reliable in Workers via waitUntil
+  try {
+    const p = evaluateAlertsOnce(ctx.tenantId, "LEDGER_EVENT_COMMITTED");
+    if (cfctx && typeof cfctx.waitUntil === "function") cfctx.waitUntil(p);
+  } catch {
+    // swallow
+  }
 
   return json(201, { event }, baseHeaders);
 }
