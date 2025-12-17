@@ -1,3 +1,4 @@
+// backend/src/server.js
 const http = require("http");
 
 const { getOrCreateRequestId } = require("./observability/requestId");
@@ -18,6 +19,11 @@ const { writeLedgerEventHttp } = require("./ledger/write");
 const vendorsRouter = require("./api/vendors");
 const complianceRouter = require("./api/compliance");
 
+// B6 procurement lifecycle
+const requisitionsRouter = require("./api/requisitions");
+const purchaseOrdersRouter = require("./api/purchaseOrders");
+const receiptsRouter = require("./api/receipts");
+
 function readJsonBody(req) {
   return new Promise((resolve) => {
     let raw = "";
@@ -35,146 +41,118 @@ function readJsonBody(req) {
   });
 }
 
-function sendJson(res, status, payload) {
-  const body = JSON.stringify(payload);
-  res.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(body),
-  });
-  res.end(body);
+function sendJson(res, status, obj) {
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.end(JSON.stringify(obj));
 }
 
-function errorJson(res, status, code, message, ctx) {
-  return sendJson(res, status, {
-    error: {
-      code,
-      message,
-      requestId: ctx?.requestId || null,
-    },
-  });
-}
-
-function notFound(res, ctx) {
-  return errorJson(res, 404, "NOT_FOUND", "Not found.", ctx);
-}
-
-function methodNotAllowed(res, ctx) {
-  return errorJson(res, 409, "METHOD_NOT_ALLOWED", "Method not allowed.", ctx);
-}
-
-function normalizePath(url) {
-  const q = url.indexOf("?");
-  return q >= 0 ? url.slice(0, q) : url;
+function notFound(res) {
+  return sendJson(res, 404, { error: { code: "NOT_FOUND", message: "Not found" } });
 }
 
 const server = http.createServer(async (req, res) => {
   const requestId = getOrCreateRequestId(req);
+  res.setHeader("x-request-id", requestId);
 
-  // B1: tenant must be session-derived only; reject client tenant override attempts
-  rejectTenantOverride(req, res, () => {});
+  const url = new URL(req.url, "http://localhost");
+  const path = url.pathname;
 
-  // Basic request context
-  const ctx = createRequestContext({ req, requestId });
+  // Parse body once; handlers may use ctx.body
+  const body = await readJsonBody(req);
 
-  // Attach parsed body once (routers can use ctx.body)
-  ctx.body = await readJsonBody(req);
-  if (ctx.body === "__INVALID_JSON__") {
-    emitAudit({
-      tenantId: null,
-      eventCategory: "API",
-      eventType: "REQUEST_INVALID_JSON",
-      objectType: "http_request",
-      objectId: null,
-      actorUserId: null,
-      actorRoleIds: [],
-      decision: "DENY",
-      reasonCode: "INVALID_JSON",
-      factsSnapshot: { path: req.url, method: req.method },
-      correlationId: requestId,
-    });
-    return errorJson(res, 400, "VALIDATION_ERROR", "Invalid JSON body.", ctx);
-  }
+  const ctx = createRequestContext({
+    requestId,
+    method: req.method,
+    path,
+    url,
+    nowUtc: new Date().toISOString(),
+    body,
+    session: null,
+    tenantId: null,
+    userId: null,
+    roleIds: [],
+  });
 
-  // Health
-  if (req.method === "GET" && normalizePath(req.url) === "/health") {
-    return sendJson(res, 200, { ok: true, requestId });
-  }
-
-  // Auth info
-  if (req.method === "GET" && normalizePath(req.url) === "/auth/me") {
+  // Public auth endpoint(s)
+  if (path === "/api/auth/me") {
     return handleAuthMe(req, res, ctx);
   }
 
-  // B3: ledger write (HTTP handler already enforces auth/tenant internally per prior phases)
-  if (normalizePath(req.url) === "/ledger" || normalizePath(req.url).startsWith("/ledger/")) {
-    return writeLedgerEventHttp(req, res, ctx);
+  // Auth gate
+  const session = resolveSession(req);
+  ctx.session = session;
+  try {
+    requireAuth(ctx);
+  } catch (e) {
+    emitAudit(ctx, {
+      eventCategory: "AUTH",
+      eventType: "AUTH_DENY",
+      decision: "DENY",
+      reasonCode: e.code || "UNAUTHORIZED",
+      factsSnapshot: { path, method: req.method },
+    });
+    return sendJson(res, 401, { error: { code: e.code || "UNAUTHORIZED", message: e.message } });
   }
 
-  // All /api/* require B1 auth + tenant context
-  if (normalizePath(req.url).startsWith("/api/")) {
-    // Auth gate
-    const authDecision = requireAuth(req);
-    if (!authDecision.ok) {
-      emitAudit({
-        tenantId: null,
-        eventCategory: "AUTH",
-        eventType: "AUTH_REQUIRED",
-        objectType: "http_request",
-        objectId: null,
-        actorUserId: null,
-        actorRoleIds: [],
-        decision: "DENY",
-        reasonCode: authDecision.reasonCode || "UNAUTHENTICATED",
-        factsSnapshot: { path: req.url, method: req.method },
-        correlationId: requestId,
-      });
-      return errorJson(res, 401, "UNAUTHENTICATED", "Authentication required.", ctx);
-    }
-
-    // Session → tenant resolution (fail-closed)
-    const session = resolveSession(req);
-    if (!session || !session.tenantId) {
-      emitAudit({
-        tenantId: null,
-        eventCategory: "TENANT",
-        eventType: "TENANT_UNRESOLVED",
-        objectType: "http_request",
-        objectId: null,
-        actorUserId: session?.userId || null,
-        actorRoleIds: session?.roleIds || [],
-        decision: "DENY",
-        reasonCode: "TENANT_UNRESOLVED",
-        factsSnapshot: { path: req.url, method: req.method },
-        correlationId: requestId,
-      });
-      return errorJson(res, 403, "TENANT_UNRESOLVED", "Tenant could not be resolved.", ctx);
-    }
-
-    ctx.tenantId = session.tenantId;
-    ctx.userId = session.userId || null;
-    ctx.roleIds = session.roleIds || [];
-
-    // Route: inventory (B2)
-    if (normalizePath(req.url).startsWith("/api/inventory")) {
-      return inventoryRouter(req, res, ctx);
-    }
-
-    // Route: vendors (B5)
-    if (normalizePath(req.url).startsWith("/api/vendors")) {
-      return vendorsRouter(req, res, ctx);
-    }
-
-    // Route: compliance rules (B5)
-    if (normalizePath(req.url).startsWith("/api/compliance")) {
-      return complianceRouter(req, res, ctx);
-    }
-
-    return notFound(res, ctx);
+  // Tenant is session-derived only (fail-closed)
+  if (!session || !session.tenantId) {
+    emitAudit(ctx, {
+      eventCategory: "TENANT",
+      eventType: "TENANT_DENY",
+      decision: "DENY",
+      reasonCode: "TENANT_UNRESOLVED",
+      factsSnapshot: { path, method: req.method },
+    });
+    return sendJson(res, 403, {
+      error: { code: "TENANT_UNRESOLVED", message: "Tenant could not be resolved" },
+    });
   }
 
-  // Default
-  if (req.method !== "GET") return methodNotAllowed(res, ctx);
-  return notFound(res, ctx);
+  ctx.tenantId = session.tenantId;
+  ctx.userId = session.userId || null;
+  ctx.roleIds = Array.isArray(session.roleIds) ? session.roleIds : [];
+
+  // Reject any client attempt to override tenant
+  try {
+    rejectTenantOverride(req);
+  } catch (e) {
+    emitAudit(ctx, {
+      eventCategory: "TENANT",
+      eventType: "TENANT_OVERRIDE_REJECT",
+      decision: "DENY",
+      reasonCode: e.code || "TENANT_OVERRIDE",
+      factsSnapshot: { path, method: req.method },
+    });
+    return sendJson(res, 403, { error: { code: e.code || "TENANT_OVERRIDE", message: e.message } });
+  }
+
+  // Invalid JSON body (fail-closed)
+  if (ctx.body === "__INVALID_JSON__") {
+    emitAudit(ctx, {
+      eventCategory: "API",
+      eventType: "INVALID_JSON",
+      decision: "DENY",
+      reasonCode: "INVALID_JSON",
+      factsSnapshot: { path, method: req.method },
+    });
+    return sendJson(res, 400, {
+      error: { code: "INVALID_JSON", message: "Request body must be valid JSON" },
+    });
+  }
+
+  // Route delegation (handlers return true if handled)
+  if (await inventoryRouter(req, res, ctx)) return;
+  if (await writeLedgerEventHttp(req, res, ctx)) return;
+
+  if (await vendorsRouter(req, res, ctx)) return;
+  if (await complianceRouter(req, res, ctx)) return;
+
+  if (await requisitionsRouter(req, res, ctx)) return;
+  if (await purchaseOrdersRouter(req, res, ctx)) return;
+  if (await receiptsRouter(req, res, ctx)) return;
+
+  return notFound(res);
 });
 
 module.exports = server;
