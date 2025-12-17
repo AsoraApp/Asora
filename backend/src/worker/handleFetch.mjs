@@ -8,6 +8,8 @@ import { writeLedgerEventFromJson } from "./ledger.write.worker.mjs";
 import { alertsFetchRouter } from "./alerts.worker.mjs";
 import { notificationsFetchRouter } from "./notifications.worker.mjs";
 
+const BUILD_STAMP = "b10-alerts-2025-12-17T22:30Z"; // change this string on each deploy attempt
+
 function json(statusCode, body, headersObj) {
   const h = new Headers(headersObj || {});
   h.set("Content-Type", "application/json; charset=utf-8");
@@ -58,6 +60,12 @@ export default async function handleFetch(request, env, cfctx) {
 
   const baseHeaders = { "X-Request-Id": requestId };
 
+  // Deterministic deployed-code check (public)
+  if (pathname === "/__build") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    return json(200, { ok: true, build: BUILD_STAMP, requestId }, baseHeaders);
+  }
+
   // Root health (public)
   if (pathname === "/") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
@@ -96,7 +104,7 @@ export default async function handleFetch(request, env, cfctx) {
     return writeLedgerEventFromJson(ctx, body, baseHeaders, cfctx);
   }
 
-  // B10 Alerts (pass cfctx so router can waitUntil evaluation)
+  // B10 Alerts
   {
     const r = await alertsFetchRouter(ctx, request, baseHeaders, cfctx);
     if (r) return r;
