@@ -1,9 +1,9 @@
+const crypto = require("crypto");
 const { emitAudit } = require("../observability/audit");
 const { loadTenantCollection, saveTenantCollection } = require("../storage/jsonStore");
 const { nowUtcIso } = require("../domain/time/utc");
 const { validateAlertRuleInput } = require("../domain/alerts/validateRule");
 const { evaluateAlertsAsync } = require("../domain/alerts/evaluate");
-const crypto = require("crypto");
 
 function json(statusCode, body, baseHeaders) {
   const h = new Headers(baseHeaders || {});
