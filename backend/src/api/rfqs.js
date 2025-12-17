@@ -165,12 +165,14 @@ function rfqRouter(ctx, req, res) {
       const body = ctx.body || {};
       const title = Object.prototype.hasOwnProperty.call(body, "title") ? body.title : rfq.title;
       const notes = Object.prototype.hasOwnProperty.call(body, "notes") ? body.notes : rfq.notes;
-      const lines = Object.prototype.hasOwnProperty.call(body, "lines") ? body.lines : rfq.lines.map((x) => ({
-        itemId: x.itemId,
-        quantity: x.quantity,
-        uom: x.uom,
-        description: x.description,
-      }));
+      const lines = Object.prototype.hasOwnProperty.call(body, "lines")
+        ? body.lines
+        : rfq.lines.map((x) => ({
+            itemId: x.itemId,
+            quantity: x.quantity,
+            uom: x.uom,
+            description: x.description,
+          }));
 
       const vLines = validateRfqLines(lines);
       if (!vLines.ok) return badRequest(res, vLines.code);
@@ -280,8 +282,7 @@ function rfqRouter(ctx, req, res) {
       return send(res, 200, { rfq });
     }
 
-    // POST /api/rfqs/:rfqId/invite-vendors
-    // Explicit stance: deterministic REPLACE (set exact list) with stable sorted storage.
+    // POST /api/rfqs/:rfqId/invite-vendors (REPLACE stance)
     if (parts.length === 4 && parts[3] === "invite-vendors" && method === "POST") {
       if (rfq.status !== "DRAFT" && rfq.status !== "ISSUED") {
         return conflict(res, "RFQ_CANNOT_INVITE", { status: rfq.status });
@@ -293,7 +294,6 @@ function rfqRouter(ctx, req, res) {
       if (!Array.isArray(vendorIds)) return badRequest(res, "VENDOR_IDS_REQUIRED");
       const normalized = vendorIds.map((v) => String(v)).filter((v) => v && v !== "null" && v !== "undefined");
 
-      // Eligibility gate for being invited (fail-closed)
       for (const vid of normalized) {
         if (!isVendorEligible(ctx.tenantId, vid)) {
           return forbidden(res, "VENDOR_INELIGIBLE_INVITE", { vendorId: vid });
