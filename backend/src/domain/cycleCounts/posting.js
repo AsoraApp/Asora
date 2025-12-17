@@ -1,25 +1,14 @@
 // backend/src/domain/cycleCounts/posting.js
 //
-// B4 Cycle Counts — deterministic helpers
-// - Deterministic line ordering
-// - Freeze snapshot computation (systemQtyAtFreeze + deltaPlanned)
-// - No HTTP concerns here
-
-const AppError = require("../../errors/AppError");
-
-// Ledger read seam (B3)
-// EXPECTED exports:
-// - getCursorAsOfNow({ tenantId }) -> cursor (opaque string/number)
+// Deterministic cycle count freeze snapshot computation.
+// Reads ledger quantities "as-of" a freeze cursor.
+//
+// Requires ledger read seam: backend/src/ledger/read.js
+// Exports expected:
+// - getCursorAsOfNow({ tenantId }) -> cursor (opaque)
 // - getQtyAsOf({ tenantId, hubId, binId, skuId, cursor }) -> number
-const ledgerRead = require("../../ledger/ledger.read");
 
-function conflict(reasonCode, message, facts) {
-  return new AppError(message || reasonCode, 409, reasonCode, facts);
-}
-
-function requireTenant(tenantId) {
-  if (!tenantId) throw conflict("TENANT_UNRESOLVED", "Tenant unresolved (fail-closed).");
-}
+const ledgerRead = require("../../ledger/read");
 
 function sortLinesDeterministically(lines) {
   return [...lines].sort((a, b) => {
@@ -30,19 +19,14 @@ function sortLinesDeterministically(lines) {
 }
 
 async function computeFreezeSnapshot({ tenantId, lines }) {
-  requireTenant(tenantId);
-  if (!Array.isArray(lines)) {
-    throw conflict("LINES_REQUIRED", "Lines required (fail-closed).");
-  }
-  if (lines.length === 0) {
-    throw new AppError("At least one line is required to submit.", 400, "SUBMIT_REQUIRES_LINES");
-  }
-
   const freezeAtUtc = new Date().toISOString();
 
   const freezeLedgerCursor = await ledgerRead.getCursorAsOfNow({ tenantId });
   if (freezeLedgerCursor === null || freezeLedgerCursor === undefined || freezeLedgerCursor === "") {
-    throw conflict("LEDGER_DERIVATION_FAILED", "Cannot derive ledger cursor (fail-closed).");
+    const err = new Error("Cannot derive ledger cursor (fail-closed).");
+    err.statusCode = 409;
+    err.reasonCode = "LEDGER_DERIVATION_FAILED";
+    throw err;
   }
 
   const ordered = sortLinesDeterministically(lines);
@@ -58,11 +42,10 @@ async function computeFreezeSnapshot({ tenantId, lines }) {
     });
 
     if (typeof systemQtyAtFreeze !== "number" || !Number.isFinite(systemQtyAtFreeze)) {
-      throw conflict("LEDGER_DERIVATION_FAILED", "Cannot derive systemQtyAtFreeze (fail-closed).", {
-        hubId: line.hubId,
-        binId: line.binId,
-        skuId: line.skuId,
-      });
+      const err = new Error("Cannot derive systemQtyAtFreeze (fail-closed).");
+      err.statusCode = 409;
+      err.reasonCode = "LEDGER_DERIVATION_FAILED";
+      throw err;
     }
 
     const deltaPlanned = line.countedQty - systemQtyAtFreeze;
