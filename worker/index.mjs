@@ -5,4 +5,3 @@ export default {
     return handleFetch(request, env, ctx);
   }
 };
-
