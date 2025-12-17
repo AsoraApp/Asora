@@ -1,50 +1,57 @@
-const fs = require("fs");
-const path = require("path");
+/**
+ * Cloudflare Worker-compatible JSON store.
+ * Tenant-scoped collections stored in KV as JSON blobs.
+ *
+ * Determinism rules:
+ * - Keys are stable: `${tenantId}::${fileName}`
+ * - Writes overwrite the whole collection deterministically
+ * - Fail-closed when tenantId missing
+ *
+ * Requires Worker env binding: ASORA_KV
+ */
 
-function tenantRootDir(tenantId) {
+function kvFromEnv() {
+  // In Workers, env is accessed in the fetch handler. We attach it to globalThis.
+  // Fail-closed if not bound.
+  const kv = globalThis.__ASORA_ENV__ && globalThis.__ASORA_ENV__.ASORA_KV;
+  return kv || null;
+}
+
+function makeKey(tenantId, fileName) {
   if (!tenantId) return null;
-  return path.join(process.cwd(), "data", "tenants", String(tenantId));
+  if (!fileName || typeof fileName !== "string") return null;
+  return `${String(tenantId)}::${fileName}`;
 }
 
-function ensureDir(p) {
-  fs.mkdirSync(p, { recursive: true });
-}
+async function loadTenantCollection(tenantId, fileName, defaultValue) {
+  const kv = kvFromEnv();
+  const key = makeKey(tenantId, fileName);
+  if (!kv) throw new Error("KV_NOT_BOUND");
+  if (!key) return null;
 
-function atomicWriteJson(filePath, data) {
-  const dir = path.dirname(filePath);
-  ensureDir(dir);
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
-  fs.renameSync(tmp, filePath);
-}
+  const raw = await kv.get(key);
+  if (raw === null || raw === undefined) return defaultValue;
 
-function readJsonOrNull(filePath) {
   try {
-    const raw = fs.readFileSync(filePath, "utf8");
     return JSON.parse(raw);
   } catch {
-    return null;
+    // Fail-closed on corrupt data: return defaultValue rather than guessing.
+    return defaultValue;
   }
 }
 
-function loadTenantCollection(tenantId, fileName, defaultValue) {
-  const root = tenantRootDir(tenantId);
-  if (!root) return null;
-  const filePath = path.join(root, fileName);
-  const existing = readJsonOrNull(filePath);
-  if (existing === null || existing === undefined) return defaultValue;
-  return existing;
-}
+async function saveTenantCollection(tenantId, fileName, value) {
+  const kv = kvFromEnv();
+  const key = makeKey(tenantId, fileName);
+  if (!kv) throw new Error("KV_NOT_BOUND");
+  if (!tenantId) throw new Error("TENANT_NOT_RESOLVED");
+  if (!key) throw new Error("INVALID_STORAGE_KEY");
 
-function saveTenantCollection(tenantId, fileName, value) {
-  const root = tenantRootDir(tenantId);
-  if (!root) throw new Error("TENANT_NOT_RESOLVED");
-  const filePath = path.join(root, fileName);
-  atomicWriteJson(filePath, value);
+  const raw = JSON.stringify(value, null, 2);
+  await kv.put(key, raw);
 }
 
 module.exports = {
-  tenantRootDir,
   loadTenantCollection,
   saveTenantCollection,
 };
