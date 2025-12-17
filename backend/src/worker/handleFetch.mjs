@@ -96,7 +96,7 @@ export default async function handleFetch(request, env, cfctx) {
     return writeLedgerEventFromJson(ctx, body, baseHeaders, cfctx);
   }
 
-  // B10 Alerts
+  // B10 Alerts (pass cfctx so router can waitUntil evaluation)
   {
     const r = await alertsFetchRouter(ctx, request, baseHeaders, cfctx);
     if (r) return r;
