@@ -1,19 +1,11 @@
 /**
- * Canonical request context constructor.
+ * Deterministic, fail-closed tenant resolution for MVP.
  *
- * Responsibilities:
- * - Deterministically derive tenant + user from session
- * - Fail-closed if tenant cannot be resolved
- * - Be runtime-agnostic (Node / Worker safe)
- *
- * Session shape (minimum):
- * {
- *   isAuthenticated: boolean
- *   token: string | null
- * }
+ * Token formats accepted:
+ * - tenant:<tenantId>
+ * - tenant:<tenantId>|user:<userId>
  */
-
-function createRequestContext({ requestId, session }) {
+export function createRequestContext({ requestId, session }) {
   const ctx = {
     requestId: requestId || null,
     session: session || null,
@@ -21,35 +13,15 @@ function createRequestContext({ requestId, session }) {
     userId: null
   };
 
-  if (!session || session.isAuthenticated !== true) {
-    return ctx; // unauthenticated context
-  }
-
-  // ---- DEV / MVP TOKEN FORMAT ----
-  // Accept simple deterministic tokens:
-  //   tenant:<tenantId>
-  //   tenant:<tenantId>|user:<userId>
-  //
-  // Examples:
-  //   Authorization: Bearer tenant:demo
-  //   Authorization: Bearer tenant:acme|user:admin
-  //
+  if (!session || session.isAuthenticated !== true) return ctx;
   const token = session.token;
-  if (typeof token !== "string") {
-    return ctx;
-  }
+  if (typeof token !== "string") return ctx;
 
   const parts = token.split("|");
   for (const p of parts) {
-    if (p.startsWith("tenant:")) {
-      ctx.tenantId = p.slice("tenant:".length);
-    }
-    if (p.startsWith("user:")) {
-      ctx.userId = p.slice("user:".length);
-    }
+    if (p.startsWith("tenant:")) ctx.tenantId = p.slice("tenant:".length);
+    if (p.startsWith("user:")) ctx.userId = p.slice("user:".length);
   }
 
   return ctx;
 }
-
-module.exports = { createRequestContext };
