@@ -1,14 +1,17 @@
-const crypto = require("crypto");
-const { emitAudit } = require("../observability/audit");
-const { loadTenantCollection, saveTenantCollection } = require("../storage/jsonStore");
-const { nowUtcIso } = require("../domain/time/utc");
-const { validateAlertRuleInput } = require("../domain/alerts/validateRule");
-const { evaluateAlertsAsync } = require("../domain/alerts/evaluate");
+import { loadTenantCollection, saveTenantCollection } from "../storage/jsonStore.mjs";
+import { nowUtcIso } from "../domain/time/utc.mjs";
+import { emitAudit } from "../observability/audit.mjs";
+import { validateAlertRuleInput } from "../domain/alerts/validateRule.mjs";
+import { evaluateAlertsAsync } from "../domain/alerts/evaluate.mjs";
 
 function json(statusCode, body, baseHeaders) {
   const h = new Headers(baseHeaders || {});
   h.set("Content-Type", "application/json; charset=utf-8");
   return new Response(JSON.stringify(body), { status: statusCode, headers: h });
+}
+
+function parsePath(pathname) {
+  return (pathname || "/").replace(/\/+$/g, "") || "/";
 }
 
 async function readJson(request) {
@@ -21,11 +24,7 @@ async function readJson(request) {
   }
 }
 
-function parsePath(pathname) {
-  return (pathname || "/").replace(/\/+$/g, "") || "/";
-}
-
-async function alertsFetchRouter(ctx, request, baseHeaders) {
+export async function alertsFetchRouter(ctx, request, baseHeaders) {
   const u = new URL(request.url);
   const pathname = parsePath(u.pathname);
   const method = (request.method || "GET").toUpperCase();
@@ -35,7 +34,7 @@ async function alertsFetchRouter(ctx, request, baseHeaders) {
 
   // GET /api/alerts/rules
   if (method === "GET" && pathname === "/api/alerts/rules") {
-    const rules = (await loadTenantCollection(ctx.tenantId, "alert_rules")) || [];
+    const rules = (await loadTenantCollection(ctx.tenantId, "alert_rules", [])) || [];
     const out = rules.filter((r) => !r.deletedAtUtc);
 
     emitAudit(ctx, {
@@ -60,7 +59,7 @@ async function alertsFetchRouter(ctx, request, baseHeaders) {
     const v = validateAlertRuleInput(input);
     if (!v.ok) return json(400, { error: "BAD_REQUEST", code: v.code, details: v.details || null }, baseHeaders);
 
-    const rules = (await loadTenantCollection(ctx.tenantId, "alert_rules")) || [];
+    const rules = (await loadTenantCollection(ctx.tenantId, "alert_rules", [])) || [];
     const now = nowUtcIso();
 
     const rule = {
@@ -89,18 +88,18 @@ async function alertsFetchRouter(ctx, request, baseHeaders) {
       factsSnapshot: { type: rule.type, scope: rule.scope, enabled: rule.enabled }
     });
 
-    evaluateAlertsAsync(ctx.tenantId, "RULE_CREATED").catch(() => {});
+    evaluateAlertsAsync(ctx.tenantId, "RULE_CREATED");
     return json(201, { rule }, baseHeaders);
   }
 
-  // Alerts list
+  // GET /api/alerts
   if (method === "GET" && pathname === "/api/alerts") {
     const status = (u.searchParams.get("status") || "").toUpperCase() || null;
     if (status && !["OPEN", "ACKNOWLEDGED", "CLOSED"].includes(status)) {
       return json(400, { error: "BAD_REQUEST", code: "INVALID_STATUS_FILTER", details: { status } }, baseHeaders);
     }
 
-    const alerts = (await loadTenantCollection(ctx.tenantId, "alerts")) || [];
+    const alerts = (await loadTenantCollection(ctx.tenantId, "alerts", [])) || [];
     const out = alerts
       .filter((a) => (status ? a.status === status : true))
       .sort((a, b) => (a.createdAtUtc < b.createdAtUtc ? 1 : -1));
@@ -120,5 +119,3 @@ async function alertsFetchRouter(ctx, request, baseHeaders) {
 
   return null;
 }
-
-module.exports = { alertsFetchRouter };

@@ -1,1 +1,3 @@
+export const ALERT_RULE_TYPES = ["LOW_STOCK", "STOCKOUT", "OVER_RECEIPT"];
+export const ALERT_RULE_SCOPES = ["ITEM", "BIN", "HUB", "AGGREGATE", "PO_LINE"];
 
