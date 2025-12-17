@@ -1,0 +1,6 @@
+{
+  "name": "asora-api",
+  "main": "worker/index.mjs",
+  "compatibility_date": "2025-12-16",
+  "compatibility_flags": ["nodejs_compat"]
+}
