@@ -8,29 +8,20 @@ const { requireAuth } = require("./auth/requireAuth");
 const { resolveSession } = require("./auth/session");
 const { emitAudit } = require("./observability/audit");
 
-// Existing routers
+// B2 inventory router + guards
 const inventoryRouter = require("./api/inventory");
 const rejectTenantOverride = require("./middleware/rejectTenantOverride");
+
+// B3 ledger write handler
 const { writeLedgerEventHttp } = require("./ledger/write");
+
+// B5 vendor compliance + eligibility
 const vendorsRouter = require("./api/vendors");
 const complianceRouter = require("./api/compliance");
 
-// New (B9)
-const offlineRouter = require("./api/offline");
-
-// Optional routers that may exist in your repo (B6/B7). If not present, server will fail-closed for those paths.
-let procurementRouter = null;
-let rfqsRouter = null;
-try {
-  procurementRouter = require("./api/procurement");
-} catch {
-  procurementRouter = null;
-}
-try {
-  rfqsRouter = require("./api/rfqs");
-} catch {
-  rfqsRouter = null;
-}
+// B10 alerts + notifications
+const alertsRouter = require("./api/alerts");
+const notificationsRouter = require("./api/notifications");
 
 function readJsonBody(req) {
   return new Promise((resolve) => {
@@ -55,144 +46,73 @@ function send(res, statusCode, body) {
   res.end(JSON.stringify(body));
 }
 
-function badRequest(res, code, details) {
-  return send(res, 400, { error: "BAD_REQUEST", code, details: details || null });
-}
-function notFound(res, code, details) {
-  return send(res, 404, { error: "NOT_FOUND", code, details: details || null });
+function notFound(res) {
+  return send(res, 404, { error: "NOT_FOUND", code: "ROUTE_NOT_FOUND" });
 }
 
-function match(pathname, prefix) {
-  return pathname === prefix || pathname.startsWith(prefix + "/");
+function methodNotAllowed(res) {
+  return send(res, 405, { error: "METHOD_NOT_ALLOWED", code: "METHOD_NOT_ALLOWED" });
+}
+
+function parsePath(pathname) {
+  return (pathname || "/").replace(/\/+$/g, "") || "/";
 }
 
 const server = http.createServer(async (req, res) => {
-  const parsed = url.parse(req.url, true);
-  const pathname = parsed.pathname || "/";
-
   const requestId = getOrCreateRequestId(req, res);
+  res.setHeader("X-Request-Id", requestId);
 
-  // Reject any tenant override attempts (fail-closed).
-  if (rejectTenantOverride(req, res)) return;
+  // Tenant override rejection (fail-closed)
+  if (!rejectTenantOverride(req, res)) return;
 
-  // Read JSON body once (routers can use req.body).
-  const body = await readJsonBody(req);
-  if (body === "__INVALID_JSON__") {
-    emitAudit(
-      { requestId, correlationId: requestId, tenantId: null, userId: null, roleIds: [] },
-      {
-        eventCategory: "HTTP",
-        eventType: "HTTP_BAD_JSON",
-        objectType: "request",
-        objectId: requestId,
-        decision: "DENY",
-        reasonCode: "INVALID_JSON",
-        factsSnapshot: { pathname, method: req.method },
-      }
-    );
-    return badRequest(res, "INVALID_JSON", null);
-  }
-  req.body = body;
-
-  // Public endpoint(s)
-  if (req.method === "GET" && pathname === "/api/auth/me") {
-    // handleAuthMe should internally consult session, but we keep behavior consistent with earlier phases.
-    return handleAuthMe(req, res, { requestId });
-  }
-
-  // Auth + tenant context (fail-closed)
+  // Resolve session (authn) and build request context (tenant-scoped)
   const session = resolveSession(req);
-  if (!session) {
-    emitAudit(
-      { requestId, correlationId: requestId, tenantId: null, userId: null, roleIds: [] },
-      {
-        eventCategory: "AUTH",
-        eventType: "AUTH_REQUIRED",
-        objectType: "request",
-        objectId: requestId,
-        decision: "DENY",
-        reasonCode: "MISSING_OR_INVALID_AUTH",
-        factsSnapshot: { pathname, method: req.method },
-      }
-    );
-    res.statusCode = 401;
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    return res.end(JSON.stringify({ error: "UNAUTHORIZED", code: "AUTH_REQUIRED" }));
-  }
+  const ctx = createRequestContext({ requestId, session });
 
-  const ctx = createRequestContext({
-    requestId,
-    correlationId: requestId,
-    session,
+  // Always emit request audit boundary (best-effort)
+  emitAudit(ctx, {
+    eventCategory: "SYSTEM",
+    eventType: "HTTP_REQUEST",
+    objectType: "http_request",
+    objectId: null,
+    decision: "SYSTEM",
+    reasonCode: "RECEIVED",
+    factsSnapshot: {
+      method: req.method || null,
+      path: url.parse(req.url || "").pathname || null,
+    },
   });
 
-  // requireAuth gate (keeps existing semantics)
-  if (!requireAuth(req, res, ctx)) return;
+  const u = url.parse(req.url || "/");
+  const pathname = parsePath(u.pathname);
 
-  // Router dispatch (tenant-scoped everywhere; routers use ctx.tenantId)
-  try {
-    // Ledger writes
-    if (match(pathname, "/api/ledger")) {
-      const handled = await writeLedgerEventHttp(req, res, ctx);
-      return handled;
-    }
-
-    // Inventory reads (B2)
-    if (match(pathname, "/api/inventory")) {
-      const handled = await inventoryRouter(req, res, ctx);
-      return handled;
-    }
-
-    // Vendor reads/compliance (B5)
-    if (match(pathname, "/api/vendors")) {
-      const handled = await vendorsRouter(req, res, ctx);
-      return handled;
-    }
-    if (match(pathname, "/api/compliance")) {
-      const handled = await complianceRouter(req, res, ctx);
-      return handled;
-    }
-
-    // Procurement lifecycle (B6) — fail-closed if module missing
-    if (match(pathname, "/api/procurement")) {
-      if (!procurementRouter) return notFound(res, "PROCUREMENT_ROUTER_MISSING", null);
-      const handled = await procurementRouter(req, res, ctx);
-      return handled;
-    }
-
-    // RFQs (B7) — fail-closed if module missing
-    if (match(pathname, "/api/rfqs")) {
-      if (!rfqsRouter) return notFound(res, "RFQS_ROUTER_MISSING", null);
-      const handled = await rfqsRouter(req, res, ctx);
-      return handled;
-    }
-
-    // Offline (B9)
-    if (match(pathname, "/api/offline")) {
-      const handled = await offlineRouter(req, res, ctx);
-      return handled;
-    }
-
-    return notFound(res, "ROUTE_NOT_FOUND", { pathname, method: req.method });
-  } catch (err) {
-    emitAudit(ctx, {
-      eventCategory: "HTTP",
-      eventType: "HTTP_HANDLER_ERROR",
-      objectType: "request",
-      objectId: requestId,
-      decision: "DENY",
-      reasonCode: "UNHANDLED_EXCEPTION",
-      factsSnapshot: {
-        pathname,
-        method: req.method,
-        message: err && err.message ? String(err.message) : "unknown",
-      },
-    });
-
-    res.statusCode = 500;
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    return res.end(JSON.stringify({ error: "INTERNAL_ERROR", code: "UNHANDLED_EXCEPTION" }));
+  // Public/auth helper
+  if (pathname === "/api/auth/me") {
+    if ((req.method || "GET").toUpperCase() !== "GET") return methodNotAllowed(res);
+    return handleAuthMe(ctx, req, res);
   }
+
+  // Auth gate for all other /api/*
+  if (pathname.startsWith("/api/")) {
+    if (!requireAuth(ctx, req, res)) return;
+  }
+
+  // Ledger write (B3)
+  if (pathname === "/api/ledger/events") {
+    if ((req.method || "POST").toUpperCase() !== "POST") return methodNotAllowed(res);
+    return writeLedgerEventHttp(ctx, req, res);
+  }
+
+  // Routers (tenant-scoped)
+  if (await inventoryRouter(ctx, req, res)) return;
+  if (await vendorsRouter(ctx, req, res)) return;
+  if (await complianceRouter(ctx, req, res)) return;
+
+  // B10
+  if (await alertsRouter(ctx, req, res)) return;
+  if (await notificationsRouter(ctx, req, res)) return;
+
+  return notFound(res);
 });
 
 module.exports = server;
