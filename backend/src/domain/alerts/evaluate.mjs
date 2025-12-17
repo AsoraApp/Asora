@@ -41,12 +41,8 @@ function notificationFor(alert) {
   };
 }
 
-export function evaluateAlertsAsync(tenantId, reason) {
-  setTimeout(() => {
-    evaluateAlertsOnce(tenantId, reason).catch(() => {});
-  }, 0);
-}
-
+// IMPORTANT: In Workers, do NOT rely on setTimeout for background work.
+// Call evaluateAlertsOnce via ctx.waitUntil(...) from the request boundary.
 export async function evaluateAlertsOnce(tenantId, reason) {
   const rules = ((await loadTenantCollection(tenantId, "alert_rules", [])) || []).filter(ruleActive);
   if (!rules.length) return { ok: true, generated: 0 };
@@ -69,10 +65,12 @@ export async function evaluateAlertsOnce(tenantId, reason) {
     if (rule.type === "LOW_STOCK" && rule.scope === "ITEM") {
       const itemId = rule.target?.itemId;
       const thresholdQty = rule.params?.thresholdQty;
+
       if (typeof itemId !== "string") continue;
       if (typeof thresholdQty !== "number" || !Number.isFinite(thresholdQty) || thresholdQty < 0) continue;
 
       const onHand = onHandByItem.get(itemId) || 0;
+
       if (onHand <= thresholdQty) {
         const conditionKey = `LOW_STOCK|ITEM|${itemId}|t:${thresholdQty}|q:${onHand}`;
         const dk = await sha256Hex(`${tenantId}|${rule.ruleId}|${conditionKey}`);

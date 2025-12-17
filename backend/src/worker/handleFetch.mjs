@@ -80,94 +80,25 @@ export default async function handleFetch(request, env, cfctx) {
     return authMeFetch(ctx, baseHeaders);
   }
 
-  // Auth gate for /api/*
+  // Auth gate
   if (pathname.startsWith("/api/")) {
     const denied = requireAuth(ctx, baseHeaders);
     if (denied) return denied;
   }
 
-  // DEV-ONLY helpers (browser friendly). Keep under /api/dev/*
-  // Create LOW_STOCK ITEM rule:
-  // /api/dev/alerts/rule/low-stock?dev_token=tenant:demo%7Cuser:admin&itemId=item-1&thresholdQty=5&enabled=true&note=abc
-  if (pathname === "/api/dev/alerts/rule/low-stock") {
-    if (method !== "GET") return methodNotAllowed(baseHeaders);
-
-    const itemId = u.searchParams.get("itemId");
-    const thresholdQtyRaw = u.searchParams.get("thresholdQty");
-    const enabledRaw = u.searchParams.get("enabled");
-    const note = u.searchParams.get("note");
-
-    const thresholdQty = thresholdQtyRaw === null ? null : Number(thresholdQtyRaw);
-    if (!itemId || typeof itemId !== "string") {
-      return json(400, { error: "BAD_REQUEST", code: "MISSING_ITEM_ID", details: null }, baseHeaders);
-    }
-    if (thresholdQtyRaw === null || !Number.isFinite(thresholdQty) || thresholdQty < 0) {
-      return json(400, { error: "BAD_REQUEST", code: "INVALID_THRESHOLD_QTY", details: { thresholdQty: thresholdQtyRaw } }, baseHeaders);
-    }
-
-    const enabled = enabledRaw === null ? true : String(enabledRaw).toLowerCase() !== "false";
-
-    // Create via same store shape the rule router expects
-    const body = {
-      type: "LOW_STOCK",
-      scope: "ITEM",
-      target: { itemId },
-      params: { thresholdQty },
-      enabled,
-      note: note || null
-    };
-
-    // Reuse the POST handler by calling alerts router with a synthetic Request
-    const req = new Request(u.origin + "/api/alerts/rules", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-
-    const r = await alertsFetchRouter(ctx, req, baseHeaders);
-    return r || notFound(baseHeaders);
-  }
-
-  // Append ledger event:
-  // /api/dev/ledger/append?dev_token=tenant:demo%7Cuser:admin&itemId=item-1&qtyDelta=3&reasonCode=RECEIPT
-  if (pathname === "/api/dev/ledger/append") {
-    if (method !== "GET") return methodNotAllowed(baseHeaders);
-
-    const itemId = u.searchParams.get("itemId");
-    const qtyDeltaRaw = u.searchParams.get("qtyDelta");
-    const reasonCode = u.searchParams.get("reasonCode");
-
-    const qtyDelta = qtyDeltaRaw === null ? null : Number(qtyDeltaRaw);
-
-    if (!itemId || typeof itemId !== "string") {
-      return json(400, { error: "BAD_REQUEST", code: "MISSING_ITEM_ID", details: null }, baseHeaders);
-    }
-    if (qtyDeltaRaw === null || !Number.isFinite(qtyDelta)) {
-      return json(400, { error: "BAD_REQUEST", code: "INVALID_QTY_DELTA", details: { qtyDelta: qtyDeltaRaw } }, baseHeaders);
-    }
-
-    const body = {
-      itemId,
-      qtyDelta,
-      reasonCode: typeof reasonCode === "string" ? reasonCode : "UNSPECIFIED"
-    };
-
-    return writeLedgerEventFromJson(ctx, body, baseHeaders);
-  }
-
-  // Ledger write (B3) normal API
+  // Ledger write (B3)
   if (pathname === "/api/ledger/events") {
     if (method !== "POST") return methodNotAllowed(baseHeaders);
     const body = await readJson(request);
     if (body === "__INVALID_JSON__") {
       return json(400, { error: "BAD_REQUEST", code: "INVALID_JSON", details: null }, baseHeaders);
     }
-    return writeLedgerEventFromJson(ctx, body, baseHeaders);
+    return writeLedgerEventFromJson(ctx, body, baseHeaders, cfctx);
   }
 
-  // B10 Alerts
+  // B10 Alerts (pass cfctx so router can waitUntil evaluation)
   {
-    const r = await alertsFetchRouter(ctx, request, baseHeaders);
+    const r = await alertsFetchRouter(ctx, request, baseHeaders, cfctx);
     if (r) return r;
   }
 
