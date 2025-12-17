@@ -2,7 +2,7 @@ import { loadTenantCollection, saveTenantCollection } from "../storage/jsonStore
 import { nowUtcIso } from "../domain/time/utc.mjs";
 import { emitAudit } from "../observability/audit.mjs";
 import { validateAlertRuleInput } from "../domain/alerts/validateRule.mjs";
-import { evaluateAlertsAsync } from "../domain/alerts/evaluate.mjs";
+import { evaluateAlertsOnce } from "../domain/alerts/evaluate.mjs";
 
 function json(statusCode, body, baseHeaders) {
   const h = new Headers(baseHeaders || {});
@@ -24,7 +24,7 @@ async function readJson(request) {
   }
 }
 
-export async function alertsFetchRouter(ctx, request, baseHeaders) {
+export async function alertsFetchRouter(ctx, request, baseHeaders, cfctx) {
   const u = new URL(request.url);
   const pathname = parsePath(u.pathname);
   const method = (request.method || "GET").toUpperCase();
@@ -33,7 +33,6 @@ export async function alertsFetchRouter(ctx, request, baseHeaders) {
   if (!ctx?.tenantId) return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
 
   // DEV (browser-friendly): create LOW_STOCK ITEM rule via query params
-  // GET /api/alerts/rules/dev-low-stock?itemId=item-1&thresholdQty=5&enabled=true&note=...
   if (method === "GET" && pathname === "/api/alerts/rules/dev-low-stock") {
     const itemId = u.searchParams.get("itemId");
     const thresholdQtyRaw = u.searchParams.get("thresholdQty");
@@ -84,8 +83,13 @@ export async function alertsFetchRouter(ctx, request, baseHeaders) {
       factsSnapshot: { type: rule.type, scope: rule.scope, enabled: rule.enabled, itemId }
     });
 
-    // Evaluate immediately so your already-written ledger event can produce an alert.
-    evaluateAlertsAsync(ctx.tenantId, "DEV_RULE_CREATED");
+    // Non-blocking evaluation, reliable via waitUntil
+    try {
+      const p = evaluateAlertsOnce(ctx.tenantId, "DEV_RULE_CREATED");
+      if (cfctx && typeof cfctx.waitUntil === "function") cfctx.waitUntil(p);
+    } catch {
+      // swallow
+    }
 
     return json(201, { rule }, baseHeaders);
   }
@@ -146,7 +150,14 @@ export async function alertsFetchRouter(ctx, request, baseHeaders) {
       factsSnapshot: { type: rule.type, scope: rule.scope, enabled: rule.enabled }
     });
 
-    evaluateAlertsAsync(ctx.tenantId, "RULE_CREATED");
+    // Non-blocking evaluation, reliable via waitUntil
+    try {
+      const p = evaluateAlertsOnce(ctx.tenantId, "RULE_CREATED");
+      if (cfctx && typeof cfctx.waitUntil === "function") cfctx.waitUntil(p);
+    } catch {
+      // swallow
+    }
+
     return json(201, { rule }, baseHeaders);
   }
 
