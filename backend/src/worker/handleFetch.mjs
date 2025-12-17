@@ -1,15 +1,15 @@
-import { getOrCreateRequestIdFromHeaders } from "../observability/requestId.worker.mjs";
-import { resolveSessionFromHeaders } from "../auth/session.worker.mjs";
-import { createRequestContext } from "../domain/requestContext.mjs";
-import { emitAudit } from "../observability/audit.mjs";
+const { getOrCreateRequestIdFromHeaders } = require("../observability/requestId.worker");
+const { createRequestContext } = require("../domain/requestContext");
+const { resolveSessionFromHeaders } = require("../auth/session.worker");
+const { emitAudit } = require("../observability/audit");
 
-import { authMeFetch } from "./auth.worker.mjs";
-import { writeLedgerEventFromJson } from "./ledger.write.worker.mjs";
-import { alertsFetchRouter } from "./alerts.worker.mjs";
-import { notificationsFetchRouter } from "./notifications.worker.mjs";
+const { writeLedgerEventFromJson } = require("../worker/ledger.write.worker");
+const { alertsFetchRouter } = require("../worker/alerts.worker");
+const { notificationsFetchRouter } = require("../worker/notifications.worker");
+const { authMeFetch } = require("../worker/auth.worker");
 
-function json(statusCode, body, headersObj) {
-  const h = new Headers(headersObj || {});
+function json(statusCode, body, extraHeaders) {
+  const h = new Headers(extraHeaders || {});
   h.set("Content-Type", "application/json; charset=utf-8");
   return new Response(JSON.stringify(body), { status: statusCode, headers: h });
 }
@@ -18,15 +18,15 @@ function parsePath(pathname) {
   return (pathname || "/").replace(/\/+$/g, "") || "/";
 }
 
-function methodNotAllowed(baseHeaders) {
-  return json(405, { error: "METHOD_NOT_ALLOWED", code: "METHOD_NOT_ALLOWED" }, baseHeaders);
+function methodNotAllowed() {
+  return json(405, { error: "METHOD_NOT_ALLOWED", code: "METHOD_NOT_ALLOWED" });
 }
-function notFound(baseHeaders) {
-  return json(404, { error: "NOT_FOUND", code: "ROUTE_NOT_FOUND" }, baseHeaders);
+function notFound() {
+  return json(404, { error: "NOT_FOUND", code: "ROUTE_NOT_FOUND" });
 }
 
 function requireAuth(ctx, baseHeaders) {
-  if (!ctx || !ctx.session || ctx.session.isAuthenticated !== true) {
+  if (!ctx || !ctx.session || !ctx.session.isAuthenticated) {
     return json(401, { error: "UNAUTHORIZED", code: "AUTH_REQUIRED", details: null }, baseHeaders);
   }
   if (!ctx.tenantId) {
@@ -45,7 +45,8 @@ async function readJson(request) {
   }
 }
 
-export default async function handleFetch(request, env, cfctx) {
+async function handleFetch(request, env, cfctx) {
+  // Bind env for storage layer (KV access).
   globalThis.__ASORA_ENV__ = env || {};
 
   const u = new URL(request.url);
@@ -53,16 +54,10 @@ export default async function handleFetch(request, env, cfctx) {
   const method = (request.method || "GET").toUpperCase();
 
   const requestId = getOrCreateRequestIdFromHeaders(request.headers);
-  const session = resolveSessionFromHeaders(request.headers, u);
+  const session = resolveSessionFromHeaders(request.headers);
   const ctx = createRequestContext({ requestId, session });
 
   const baseHeaders = { "X-Request-Id": requestId };
-
-  // Root health (public)
-  if (pathname === "/") {
-    if (method !== "GET") return methodNotAllowed(baseHeaders);
-    return json(200, { ok: true, service: "asora", runtime: "cloudflare-worker", requestId }, baseHeaders);
-  }
 
   emitAudit(ctx, {
     eventCategory: "SYSTEM",
@@ -76,11 +71,11 @@ export default async function handleFetch(request, env, cfctx) {
 
   // Public
   if (pathname === "/api/auth/me") {
-    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    if (method !== "GET") return methodNotAllowed();
     return authMeFetch(ctx, baseHeaders);
   }
 
-  // Auth gate
+  // Auth gate for /api/*
   if (pathname.startsWith("/api/")) {
     const denied = requireAuth(ctx, baseHeaders);
     if (denied) return denied;
@@ -88,17 +83,17 @@ export default async function handleFetch(request, env, cfctx) {
 
   // Ledger write (B3)
   if (pathname === "/api/ledger/events") {
-    if (method !== "POST") return methodNotAllowed(baseHeaders);
+    if (method !== "POST") return methodNotAllowed();
     const body = await readJson(request);
     if (body === "__INVALID_JSON__") {
       return json(400, { error: "BAD_REQUEST", code: "INVALID_JSON", details: null }, baseHeaders);
     }
-    return writeLedgerEventFromJson(ctx, body, baseHeaders, cfctx);
+    return writeLedgerEventFromJson(ctx, body, baseHeaders);
   }
 
-  // B10 Alerts (pass cfctx so router can waitUntil evaluation)
+  // B10 Alerts
   {
-    const r = await alertsFetchRouter(ctx, request, baseHeaders, cfctx);
+    const r = await alertsFetchRouter(ctx, request, baseHeaders);
     if (r) return r;
   }
 
@@ -108,5 +103,7 @@ export default async function handleFetch(request, env, cfctx) {
     if (r) return r;
   }
 
-  return notFound(baseHeaders);
+  return notFound();
 }
+
+module.exports = { handleFetch };
