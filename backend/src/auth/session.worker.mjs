@@ -3,8 +3,5 @@ export function resolveSessionFromHeaders(headers) {
   const m = auth.match(/^Bearer\s+(.+)$/i);
   const token = m ? m[1] : null;
 
-  return {
-    isAuthenticated: !!token,
-    token: token || null
-  };
+  return { isAuthenticated: !!token, token: token || null };
 }

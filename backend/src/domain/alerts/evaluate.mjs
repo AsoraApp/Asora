@@ -1,53 +1,35 @@
-import { loadTenantCollection, saveTenantCollection } from "../../storage/jsonStore.mjs";
+import { loadTenantCollection, saveTenantCollection } from "../../storage/jsonStore.worker.mjs";
 import { nowUtcIso } from "../time/utc.mjs";
-import { dedupeKey } from "./dedupe.mjs";
 
 function safeNum(x) {
   return typeof x === "number" && Number.isFinite(x) ? x : null;
 }
 
-function sumByKey(map, key, delta) {
-  const cur = map.get(key) || 0;
-  map.set(key, cur + delta);
+async function sha256Hex(s) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  const bytes = new Uint8Array(buf);
+  let hex = "";
+  for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+  return hex;
 }
 
-async function computeOnHand(tenantId) {
-  const events = (await loadTenantCollection(tenantId, "ledger_events", [])) || [];
+function ruleActive(r) {
+  return r && !r.deletedAtUtc && r.enabled === true;
+}
 
-  const byItem = new Map();
+async function computeOnHandByItem(tenantId) {
+  const events = (await loadTenantCollection(tenantId, "ledger_events", [])) || [];
+  const m = new Map();
   for (const e of events) {
     if (!e || typeof e.itemId !== "string") continue;
     const d = safeNum(e.qtyDelta);
     if (d === null) continue;
-    sumByKey(byItem, e.itemId, d);
+    m.set(e.itemId, (m.get(e.itemId) || 0) + d);
   }
-  return { byItem };
+  return m;
 }
 
-function ruleIsActive(rule) {
-  return rule && !rule.deletedAtUtc && rule.enabled === true;
-}
-
-async function makeAlert(tenantId, rule, conditionKey, condition) {
-  const dk = await dedupeKey(tenantId, rule.ruleId, conditionKey);
-  return {
-    alertId: crypto.randomUUID(),
-    tenantId,
-    ruleId: rule.ruleId,
-    status: "OPEN",
-    createdAtUtc: nowUtcIso(),
-    updatedAtUtc: nowUtcIso(),
-    acknowledgedAtUtc: null,
-    acknowledgedByUserId: null,
-    closedAtUtc: null,
-    closedByUserId: null,
-    dedupeKey: dk,
-    conditionKey,
-    condition
-  };
-}
-
-function makeNotification(alert) {
+function notificationFor(alert) {
   return {
     notificationId: crypto.randomUUID(),
     createdAtUtc: nowUtcIso(),
@@ -66,51 +48,55 @@ export function evaluateAlertsAsync(tenantId, reason) {
 }
 
 export async function evaluateAlertsOnce(tenantId, reason) {
-  const rules = (await loadTenantCollection(tenantId, "alert_rules", [])) || [];
-  const activeRules = rules.filter(ruleIsActive);
-  if (activeRules.length === 0) return { ok: true, generated: 0, reason };
+  const rules = ((await loadTenantCollection(tenantId, "alert_rules", [])) || []).filter(ruleActive);
+  if (!rules.length) return { ok: true, generated: 0 };
 
   const alerts = (await loadTenantCollection(tenantId, "alerts", [])) || [];
   const notifications = (await loadTenantCollection(tenantId, "notifications", [])) || [];
 
-  const openIndex = new Set();
-  for (const a of alerts) {
-    if (!a || typeof a.dedupeKey !== "string") continue;
-    if (a.status === "OPEN" || a.status === "ACKNOWLEDGED") openIndex.add(a.dedupeKey);
-  }
+  const openDedupe = new Set(
+    alerts
+      .filter((a) => a && typeof a.dedupeKey === "string" && (a.status === "OPEN" || a.status === "ACKNOWLEDGED"))
+      .map((a) => a.dedupeKey)
+  );
 
-  const onHand = await computeOnHand(tenantId);
+  const onHandByItem = await computeOnHandByItem(tenantId);
 
-  let generated = 0;
   const newAlerts = [];
   const newNotifs = [];
 
-  for (const rule of activeRules) {
-    if (!rule.ruleId || typeof rule.type !== "string" || typeof rule.scope !== "string") continue;
-
+  for (const rule of rules) {
     if (rule.type === "LOW_STOCK" && rule.scope === "ITEM") {
-      const thresholdQty = safeNum(rule.params ? rule.params.thresholdQty : null);
-      const itemId = rule.target && typeof rule.target.itemId === "string" ? rule.target.itemId : null;
-      if (thresholdQty === null || !itemId) continue;
+      const itemId = rule.target?.itemId;
+      const thresholdQty = rule.params?.thresholdQty;
+      if (typeof itemId !== "string") continue;
+      if (typeof thresholdQty !== "number" || !Number.isFinite(thresholdQty) || thresholdQty < 0) continue;
 
-      const qty = onHand.byItem.get(itemId) || 0;
-      if (qty <= thresholdQty) {
-        const conditionKey = `LOW_STOCK|ITEM|item:${itemId}|threshold:${thresholdQty}|onHand:${qty}`;
-        const dk = await dedupeKey(tenantId, rule.ruleId, conditionKey);
-        if (!openIndex.has(dk)) {
-          const alert = await makeAlert(tenantId, rule, conditionKey, {
-            type: "LOW_STOCK",
-            scope: "ITEM",
-            itemId,
-            thresholdQty,
-            onHandQty: qty,
-            reason
-          });
-          openIndex.add(alert.dedupeKey);
-          newAlerts.push(alert);
-          newNotifs.push(makeNotification(alert));
-          generated += 1;
-        }
+      const onHand = onHandByItem.get(itemId) || 0;
+      if (onHand <= thresholdQty) {
+        const conditionKey = `LOW_STOCK|ITEM|${itemId}|t:${thresholdQty}|q:${onHand}`;
+        const dk = await sha256Hex(`${tenantId}|${rule.ruleId}|${conditionKey}`);
+        if (openDedupe.has(dk)) continue;
+
+        const alert = {
+          alertId: crypto.randomUUID(),
+          tenantId,
+          ruleId: rule.ruleId,
+          status: "OPEN",
+          createdAtUtc: nowUtcIso(),
+          updatedAtUtc: nowUtcIso(),
+          acknowledgedAtUtc: null,
+          acknowledgedByUserId: null,
+          closedAtUtc: null,
+          closedByUserId: null,
+          dedupeKey: dk,
+          conditionKey,
+          condition: { type: "LOW_STOCK", scope: "ITEM", itemId, thresholdQty, onHandQty: onHand, reason }
+        };
+
+        openDedupe.add(dk);
+        newAlerts.push(alert);
+        newNotifs.push(notificationFor(alert));
       }
     }
   }
@@ -118,5 +104,5 @@ export async function evaluateAlertsOnce(tenantId, reason) {
   if (newAlerts.length) await saveTenantCollection(tenantId, "alerts", alerts.concat(newAlerts));
   if (newNotifs.length) await saveTenantCollection(tenantId, "notifications", notifications.concat(newNotifs));
 
-  return { ok: true, generated, reason };
+  return { ok: true, generated: newAlerts.length };
 }
