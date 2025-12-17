@@ -24,7 +24,7 @@ const complianceRouter = require("./api/compliance");
 const procurementRouter = require("./api/procurement");
 
 // B7 RFQs + Quotes + Comparison + Selection + PO from selected quote
-const rfqsRouter = require("./api/rfqs");
+const rfqsRouter = require("./api/rfqsRouter");
 const quotesRouter = require("./api/quotes");
 const poFromSelectedQuoteRouter = require("./api/purchaseOrdersFromSelectedQuote");
 
