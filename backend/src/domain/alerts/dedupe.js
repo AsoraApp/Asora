@@ -1,15 +1,10 @@
-const crypto = require("crypto");
-
-/**
- * Deterministic dedupe key:
- * sha256( tenantId | ruleId | conditionKey )
- *
- * conditionKey MUST be stable and fully explicit:
- * e.g., "LOW_STOCK|ITEM|item:abc|threshold:5|onHand:3"
- */
-function dedupeKey(tenantId, ruleId, conditionKey) {
+export function dedupeKey(tenantId, ruleId, conditionKey) {
   const raw = `${tenantId}|${ruleId}|${conditionKey}`;
-  return crypto.createHash("sha256").update(raw, "utf8").digest("hex");
+  // sha256 using WebCrypto
+  return crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw)).then((buf) => {
+    const bytes = new Uint8Array(buf);
+    let hex = "";
+    for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+    return hex;
+  });
 }
-
-module.exports = { dedupeKey };
