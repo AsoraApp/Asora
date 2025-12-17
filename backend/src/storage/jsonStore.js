@@ -1,71 +1,50 @@
-// backend/src/storage/jsonStore.js
 const fs = require("fs");
 const path = require("path");
 
-function baseDir() {
-  // deterministic local persistence within repo runtime
-  return path.join(__dirname, "..", ".asora-data");
-}
-
-function tenantDir(tenantId) {
-  return path.join(baseDir(), String(tenantId));
+function tenantRootDir(tenantId) {
+  if (!tenantId) return null;
+  return path.join(process.cwd(), "data", "tenants", String(tenantId));
 }
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
 }
 
-function collectionPath(tenantId, collectionName) {
-  return path.join(tenantDir(tenantId), `${collectionName}.json`);
+function atomicWriteJson(filePath, data) {
+  const dir = path.dirname(filePath);
+  ensureDir(dir);
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
+  fs.renameSync(tmp, filePath);
 }
 
-function readCollection(tenantId, collectionName) {
-  const dir = tenantDir(tenantId);
-  ensureDir(dir);
-
-  const fp = collectionPath(tenantId, collectionName);
-  if (!fs.existsSync(fp)) {
-    fs.writeFileSync(fp, JSON.stringify({ items: [] }, null, 2), "utf-8");
-  }
-  const raw = fs.readFileSync(fp, "utf-8");
+function readJsonOrNull(filePath) {
   try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.items)) return { items: [] };
-    return parsed;
+    const raw = fs.readFileSync(filePath, "utf8");
+    return JSON.parse(raw);
   } catch {
-    // fail-closed: corrupted store => treat as empty but preserve file by not overwriting
-    return { items: [] };
+    return null;
   }
 }
 
-function writeCollection(tenantId, collectionName, data) {
-  const dir = tenantDir(tenantId);
-  ensureDir(dir);
-  const fp = collectionPath(tenantId, collectionName);
-  fs.writeFileSync(fp, JSON.stringify(data, null, 2), "utf-8");
+function loadTenantCollection(tenantId, fileName, defaultValue) {
+  const root = tenantRootDir(tenantId);
+  if (!root) return null;
+  const filePath = path.join(root, fileName);
+  const existing = readJsonOrNull(filePath);
+  if (existing === null || existing === undefined) return defaultValue;
+  return existing;
 }
 
-function list(tenantId, collectionName) {
-  return readCollection(tenantId, collectionName).items;
+function saveTenantCollection(tenantId, fileName, value) {
+  const root = tenantRootDir(tenantId);
+  if (!root) throw new Error("TENANT_NOT_RESOLVED");
+  const filePath = path.join(root, fileName);
+  atomicWriteJson(filePath, value);
 }
 
-function getById(tenantId, collectionName, idField, idValue) {
-  const items = list(tenantId, collectionName);
-  return items.find((x) => x && x[idField] === idValue) || null;
-}
-
-function upsertById(tenantId, collectionName, idField, obj) {
-  const store = readCollection(tenantId, collectionName);
-  const idx = store.items.findIndex((x) => x && x[idField] === obj[idField]);
-  if (idx >= 0) store.items[idx] = obj;
-  else store.items.push(obj);
-  writeCollection(tenantId, collectionName, store);
-  return obj;
-}
-
-function replaceAll(tenantId, collectionName, items) {
-  writeCollection(tenantId, collectionName, { items: Array.isArray(items) ? items : [] });
-  return items;
-}
-
-module.exports = { list, getById, upsertById, replaceAll };
+module.exports = {
+  tenantRootDir,
+  loadTenantCollection,
+  saveTenantCollection,
+};
