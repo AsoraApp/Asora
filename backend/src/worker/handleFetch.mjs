@@ -59,6 +59,21 @@ export default async function handleFetch(request, env, cfctx) {
 
   const baseHeaders = { "X-Request-Id": requestId };
 
+  // Root health (public)
+  if (pathname === "/") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    return json(
+      200,
+      {
+        ok: true,
+        service: "asora",
+        runtime: "cloudflare-worker",
+        requestId
+      },
+      baseHeaders
+    );
+  }
+
   emitAudit(ctx, {
     eventCategory: "SYSTEM",
     eventType: "HTTP_REQUEST",
