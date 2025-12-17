@@ -1,12 +1,12 @@
-const { getOrCreateRequestIdFromHeaders } = require("../observability/requestId.worker");
-const { createRequestContext } = require("../domain/requestContext");
-const { resolveSessionFromHeaders } = require("../auth/session.worker");
-const { emitAudit } = require("../observability/audit");
+import { getOrCreateRequestIdFromHeaders } from "../observability/requestId.worker.mjs";
+import { createRequestContext } from "../domain/requestContext.mjs";
+import { resolveSessionFromHeaders } from "../auth/session.worker.mjs";
+import { emitAudit } from "../observability/audit.mjs";
 
-const { writeLedgerEventFromJson } = require("../worker/ledger.write.worker");
-const { alertsFetchRouter } = require("../worker/alerts.worker");
-const { notificationsFetchRouter } = require("../worker/notifications.worker");
-const { authMeFetch } = require("../worker/auth.worker");
+import { writeLedgerEventFromJson } from "./ledger.write.worker.mjs";
+import { alertsFetchRouter } from "./alerts.worker.mjs";
+import { notificationsFetchRouter } from "./notifications.worker.mjs";
+import { authMeFetch } from "./auth.worker.mjs";
 
 function json(statusCode, body, extraHeaders) {
   const h = new Headers(extraHeaders || {});
@@ -26,7 +26,7 @@ function notFound() {
 }
 
 function requireAuth(ctx, baseHeaders) {
-  if (!ctx || !ctx.session || !ctx.session.isAuthenticated) {
+  if (!ctx || !ctx.session || ctx.session.isAuthenticated !== true) {
     return json(401, { error: "UNAUTHORIZED", code: "AUTH_REQUIRED", details: null }, baseHeaders);
   }
   if (!ctx.tenantId) {
@@ -45,8 +45,8 @@ async function readJson(request) {
   }
 }
 
-async function handleFetch(request, env, cfctx) {
-  // Bind env for storage layer (KV access).
+export default async function handleFetch(request, env, cfctx) {
+  // KV binding for storage layer
   globalThis.__ASORA_ENV__ = env || {};
 
   const u = new URL(request.url);
@@ -69,19 +69,16 @@ async function handleFetch(request, env, cfctx) {
     factsSnapshot: { method, path: pathname }
   });
 
-  // Public
   if (pathname === "/api/auth/me") {
     if (method !== "GET") return methodNotAllowed();
     return authMeFetch(ctx, baseHeaders);
   }
 
-  // Auth gate for /api/*
   if (pathname.startsWith("/api/")) {
     const denied = requireAuth(ctx, baseHeaders);
     if (denied) return denied;
   }
 
-  // Ledger write (B3)
   if (pathname === "/api/ledger/events") {
     if (method !== "POST") return methodNotAllowed();
     const body = await readJson(request);
@@ -91,13 +88,10 @@ async function handleFetch(request, env, cfctx) {
     return writeLedgerEventFromJson(ctx, body, baseHeaders);
   }
 
-  // B10 Alerts
   {
     const r = await alertsFetchRouter(ctx, request, baseHeaders);
     if (r) return r;
   }
-
-  // B10 Notifications
   {
     const r = await notificationsFetchRouter(ctx, request, baseHeaders);
     if (r) return r;
@@ -105,5 +99,3 @@ async function handleFetch(request, env, cfctx) {
 
   return notFound();
 }
-
-module.exports = { handleFetch };
