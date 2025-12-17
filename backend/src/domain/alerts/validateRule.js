@@ -1,10 +1,10 @@
-const { ALERT_RULE_TYPES, ALERT_RULE_SCOPES } = require("./types");
+import { ALERT_RULE_TYPES, ALERT_RULE_SCOPES } from "./types.mjs";
 
 function isObj(x) {
   return x && typeof x === "object" && !Array.isArray(x);
 }
 
-function validateAlertRuleInput(input, opts) {
+export function validateAlertRuleInput(input, opts) {
   const options = opts || {};
   const allowPartial = !!options.allowPartial;
   const requireAll = !!options.requireAll;
@@ -13,8 +13,6 @@ function validateAlertRuleInput(input, opts) {
 
   const has = (k) => Object.prototype.hasOwnProperty.call(input, k);
 
-  // For create: require type + scope.
-  // For update: allow partial but if provided must be valid.
   if (requireAll || !allowPartial) {
     if (!has("type")) return { ok: false, code: "MISSING_TYPE", details: null };
     if (!has("scope")) return { ok: false, code: "MISSING_SCOPE", details: null };
@@ -46,40 +44,29 @@ function validateAlertRuleInput(input, opts) {
     return { ok: false, code: "INVALID_PARAMS", details: { params: input.params } };
   }
 
-  // Cross-field deterministic constraints (when enough info exists).
+  // Cross-field deterministic constraints
   const type = has("type") ? String(input.type) : null;
   const scope = has("scope") ? String(input.scope) : null;
   const params = has("params") ? input.params : null;
   const target = has("target") ? input.target : null;
 
-  // If partial update, only enforce these rules if both fields are present.
   const shouldCrossValidate =
     requireAll || (!allowPartial && type && scope) || (allowPartial && type && scope);
 
   if (shouldCrossValidate) {
-    // LOW_STOCK requires params.thresholdQty (number >= 0).
     if (type === "LOW_STOCK") {
       if (!params || typeof params.thresholdQty !== "number" || !Number.isFinite(params.thresholdQty) || params.thresholdQty < 0) {
         return { ok: false, code: "LOW_STOCK_REQUIRES_THRESHOLD_QTY", details: { thresholdQty: params ? params.thresholdQty : null } };
       }
     }
 
-    // STOCKOUT needs no params.
-    if (type === "STOCKOUT") {
-      // ok
-    }
-
-    // OVER_RECEIPT requires scope PO_LINE and target.poId + target.poLineId (deterministic pointer).
     if (type === "OVER_RECEIPT") {
-      if (scope !== "PO_LINE") {
-        return { ok: false, code: "OVER_RECEIPT_SCOPE_MUST_BE_PO_LINE", details: { scope } };
-      }
+      if (scope !== "PO_LINE") return { ok: false, code: "OVER_RECEIPT_SCOPE_MUST_BE_PO_LINE", details: { scope } };
       if (!target || typeof target.poId !== "string" || typeof target.poLineId !== "string") {
         return { ok: false, code: "OVER_RECEIPT_REQUIRES_PO_TARGET", details: { target } };
       }
     }
 
-    // Scope target requirements for item/bin/hub.
     if (scope === "ITEM") {
       if (!target || typeof target.itemId !== "string") return { ok: false, code: "ITEM_SCOPE_REQUIRES_ITEM_ID", details: { target } };
     }
@@ -90,7 +77,6 @@ function validateAlertRuleInput(input, opts) {
       if (!target || typeof target.hubId !== "string") return { ok: false, code: "HUB_SCOPE_REQUIRES_HUB_ID", details: { target } };
     }
     if (scope === "AGGREGATE") {
-      // target optional; aggregate can be global or itemId-based
       if (target && target.itemId && typeof target.itemId !== "string") {
         return { ok: false, code: "AGGREGATE_INVALID_ITEM_ID", details: { target } };
       }
@@ -99,5 +85,3 @@ function validateAlertRuleInput(input, opts) {
 
   return { ok: true };
 }
-
-module.exports = { validateAlertRuleInput };
