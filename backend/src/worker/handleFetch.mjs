@@ -54,9 +54,11 @@ export default async function handleFetch(request, env, cfctx) {
   const method = (request.method || "GET").toUpperCase();
 
   const requestId = getOrCreateRequestIdFromHeaders(request.headers);
-  const session = resolveSessionFromHeaders(request.headers);
-  const ctx = createRequestContext({ requestId, session });
 
+  // NOTE: dev_token fallback is handled here via URL param
+  const session = resolveSessionFromHeaders(request.headers, u);
+
+  const ctx = createRequestContext({ requestId, session });
   const baseHeaders = { "X-Request-Id": requestId };
 
   // Root health (public)
@@ -64,16 +66,12 @@ export default async function handleFetch(request, env, cfctx) {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
     return json(
       200,
-      {
-        ok: true,
-        service: "asora",
-        runtime: "cloudflare-worker",
-        requestId
-      },
+      { ok: true, service: "asora", runtime: "cloudflare-worker", requestId },
       baseHeaders
     );
   }
 
+  // Request boundary audit (best-effort)
   emitAudit(ctx, {
     eventCategory: "SYSTEM",
     eventType: "HTTP_REQUEST",
