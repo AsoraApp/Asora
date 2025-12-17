@@ -1,4 +1,4 @@
-import { loadTenantCollection, saveTenantCollection } from "../storage/jsonStore.mjs";
+import { loadTenantCollection, saveTenantCollection } from "../storage/jsonStore.worker.mjs";
 import { nowUtcIso } from "../domain/time/utc.mjs";
 import { emitAudit } from "../observability/audit.mjs";
 import { evaluateAlertsAsync } from "../domain/alerts/evaluate.mjs";
@@ -10,28 +10,21 @@ function json(statusCode, body, baseHeaders) {
 }
 
 export async function writeLedgerEventFromJson(ctx, input, baseHeaders) {
-  if (!ctx || !ctx.tenantId) return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
+  if (!ctx?.tenantId) return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
   if (!input || typeof input !== "object") return json(400, { error: "BAD_REQUEST", code: "INVALID_BODY_OBJECT", details: null }, baseHeaders);
 
   if (typeof input.itemId !== "string") return json(400, { error: "BAD_REQUEST", code: "MISSING_ITEM_ID", details: null }, baseHeaders);
   if (typeof input.qtyDelta !== "number" || !Number.isFinite(input.qtyDelta)) {
     return json(400, { error: "BAD_REQUEST", code: "INVALID_QTY_DELTA", details: null }, baseHeaders);
   }
-  if (input.hubId !== undefined && typeof input.hubId !== "string") {
-    return json(400, { error: "BAD_REQUEST", code: "INVALID_HUB_ID", details: null }, baseHeaders);
-  }
-  if (input.binId !== undefined && typeof input.binId !== "string") {
-    return json(400, { error: "BAD_REQUEST", code: "INVALID_BIN_ID", details: null }, baseHeaders);
-  }
 
-  const now = nowUtcIso();
   const event = {
     ledgerEventId: crypto.randomUUID(),
     tenantId: ctx.tenantId,
-    createdAtUtc: now,
+    createdAtUtc: nowUtcIso(),
     itemId: input.itemId,
-    hubId: input.hubId || null,
-    binId: input.binId || null,
+    hubId: typeof input.hubId === "string" ? input.hubId : null,
+    binId: typeof input.binId === "string" ? input.binId : null,
     qtyDelta: input.qtyDelta,
     reasonCode: typeof input.reasonCode === "string" ? input.reasonCode : "UNSPECIFIED",
     referenceType: typeof input.referenceType === "string" ? input.referenceType : null,
