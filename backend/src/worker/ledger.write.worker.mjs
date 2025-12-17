@@ -10,12 +10,24 @@ function json(statusCode, body, baseHeaders) {
 }
 
 export async function writeLedgerEventFromJson(ctx, input, baseHeaders) {
-  if (!ctx?.tenantId) return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
-  if (!input || typeof input !== "object") return json(400, { error: "BAD_REQUEST", code: "INVALID_BODY_OBJECT", details: null }, baseHeaders);
+  if (!ctx?.tenantId) {
+    return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
+  }
+  if (!input || typeof input !== "object") {
+    return json(400, { error: "BAD_REQUEST", code: "INVALID_BODY_OBJECT", details: null }, baseHeaders);
+  }
 
-  if (typeof input.itemId !== "string") return json(400, { error: "BAD_REQUEST", code: "MISSING_ITEM_ID", details: null }, baseHeaders);
+  if (typeof input.itemId !== "string") {
+    return json(400, { error: "BAD_REQUEST", code: "MISSING_ITEM_ID", details: null }, baseHeaders);
+  }
   if (typeof input.qtyDelta !== "number" || !Number.isFinite(input.qtyDelta)) {
     return json(400, { error: "BAD_REQUEST", code: "INVALID_QTY_DELTA", details: null }, baseHeaders);
+  }
+  if (input.hubId !== undefined && typeof input.hubId !== "string") {
+    return json(400, { error: "BAD_REQUEST", code: "INVALID_HUB_ID", details: null }, baseHeaders);
+  }
+  if (input.binId !== undefined && typeof input.binId !== "string") {
+    return json(400, { error: "BAD_REQUEST", code: "INVALID_BIN_ID", details: null }, baseHeaders);
   }
 
   const event = {
@@ -46,6 +58,8 @@ export async function writeLedgerEventFromJson(ctx, input, baseHeaders) {
     factsSnapshot: { itemId: event.itemId, qtyDelta: event.qtyDelta, hubId: event.hubId, binId: event.binId }
   });
 
+  // observer-only, non-blocking
   evaluateAlertsAsync(ctx.tenantId, "LEDGER_EVENT_COMMITTED");
+
   return json(201, { event }, baseHeaders);
 }
