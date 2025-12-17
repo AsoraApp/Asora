@@ -1,11 +1,8 @@
-const url = require("url");
-
 const { getOrCreateRequestIdFromHeaders } = require("../observability/requestId.worker");
 const { createRequestContext } = require("../domain/requestContext");
 const { resolveSessionFromHeaders } = require("../auth/session.worker");
 const { emitAudit } = require("../observability/audit");
 
-// Existing domain/handlers you already have (reused)
 const { writeLedgerEventFromJson } = require("../worker/ledger.write.worker");
 const { alertsFetchRouter } = require("../worker/alerts.worker");
 const { notificationsFetchRouter } = require("../worker/notifications.worker");
@@ -28,12 +25,12 @@ function notFound() {
   return json(404, { error: "NOT_FOUND", code: "ROUTE_NOT_FOUND" });
 }
 
-function requireAuth(ctx) {
+function requireAuth(ctx, baseHeaders) {
   if (!ctx || !ctx.session || !ctx.session.isAuthenticated) {
-    return json(401, { error: "UNAUTHORIZED", code: "AUTH_REQUIRED" });
+    return json(401, { error: "UNAUTHORIZED", code: "AUTH_REQUIRED", details: null }, baseHeaders);
   }
   if (!ctx.tenantId) {
-    return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null });
+    return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
   }
   return null;
 }
@@ -49,19 +46,19 @@ async function readJson(request) {
 }
 
 async function handleFetch(request, env, cfctx) {
+  // Bind env for storage layer (KV access).
+  globalThis.__ASORA_ENV__ = env || {};
+
   const u = new URL(request.url);
   const pathname = parsePath(u.pathname);
   const method = (request.method || "GET").toUpperCase();
 
   const requestId = getOrCreateRequestIdFromHeaders(request.headers);
   const session = resolveSessionFromHeaders(request.headers);
-
   const ctx = createRequestContext({ requestId, session });
 
-  // Add request id header on all responses
   const baseHeaders = { "X-Request-Id": requestId };
 
-  // Request boundary audit (best-effort)
   emitAudit(ctx, {
     eventCategory: "SYSTEM",
     eventType: "HTTP_REQUEST",
@@ -69,7 +66,7 @@ async function handleFetch(request, env, cfctx) {
     objectId: null,
     decision: "SYSTEM",
     reasonCode: "RECEIVED",
-    factsSnapshot: { method, path: pathname },
+    factsSnapshot: { method, path: pathname }
   });
 
   // Public
@@ -80,18 +77,17 @@ async function handleFetch(request, env, cfctx) {
 
   // Auth gate for /api/*
   if (pathname.startsWith("/api/")) {
-    const denied = requireAuth(ctx);
-    if (denied) {
-      denied.headers.set("X-Request-Id", requestId);
-      return denied;
-    }
+    const denied = requireAuth(ctx, baseHeaders);
+    if (denied) return denied;
   }
 
   // Ledger write (B3)
   if (pathname === "/api/ledger/events") {
     if (method !== "POST") return methodNotAllowed();
     const body = await readJson(request);
-    if (body === "__INVALID_JSON__") return json(400, { error: "BAD_REQUEST", code: "INVALID_JSON", details: null }, baseHeaders);
+    if (body === "__INVALID_JSON__") {
+      return json(400, { error: "BAD_REQUEST", code: "INVALID_JSON", details: null }, baseHeaders);
+    }
     return writeLedgerEventFromJson(ctx, body, baseHeaders);
   }
 
