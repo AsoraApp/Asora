@@ -1,3 +1,16 @@
+// backend/src/server.js
+//
+// Asora backend — raw Node HTTP server (no Express)
+// B1: auth + tenant context (session-derived tenantId)
+// B2: inventory read router delegation
+// B3: ledger write endpoint
+// B4: cycle counts router delegation
+//
+// Global rules enforced here:
+// - Fail-closed on session/tenant resolution ambiguity
+// - Protected routing under /api/* requires auth + tenant override guard
+// - req.ctx is the authoritative request context
+
 const http = require("http");
 
 const { getOrCreateRequestId } = require("./observability/requestId");
@@ -13,6 +26,9 @@ const rejectTenantOverride = require("./middleware/rejectTenantOverride");
 
 // B3 ledger write handler
 const { writeLedgerEventHttp } = require("./ledger/write");
+
+// B4 cycle counts router
+const cycleCountsRouter = require("./api/cycleCounts");
 
 function readJsonBody(req) {
   return new Promise((resolve) => {
@@ -31,27 +47,29 @@ function readJsonBody(req) {
   });
 }
 
+function json(res, status, body) {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
 const server = http.createServer(async (req, res) => {
   const requestId = getOrCreateRequestId(req);
   res.setHeader("x-request-id", requestId);
 
-  // Parse JSON body once
+  // Parse JSON body once (best-effort; null allowed)
   const body = await readJsonBody(req);
   if (body === "__INVALID_JSON__") {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        error: { code: "BAD_REQUEST", message: "Invalid JSON" },
-        requestId,
-      })
-    );
+    json(res, 400, {
+      error: { code: "BAD_REQUEST", message: "Invalid JSON" },
+      requestId,
+    });
     return;
   }
   req.body = body;
 
+  // Resolve session (fail-closed)
   const session = resolveSession(req);
 
-  // ----- fail-closed on session / tenant resolution -----
   if (session.error) {
     emitAudit({
       category: "TENANT",
@@ -60,8 +78,7 @@ const server = http.createServer(async (req, res) => {
       error: session.error,
     });
 
-    res.writeHead(session.status, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: session.error, requestId }));
+    json(res, session.status, { error: session.error, requestId });
     return;
   }
 
@@ -73,19 +90,19 @@ const server = http.createServer(async (req, res) => {
     tenantId: session.tenantId,
   });
 
+  // Create request context (authoritative tenant + user)
   const ctx = createRequestContext({
     requestId,
     userId: session.userId,
     tenantId: session.tenantId,
   });
 
-  // expose context
+  // Expose context
   req.ctx = ctx;
 
   // ----- public route -----
   if (req.method === "GET" && req.url === "/health") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", requestId }));
+    json(res, 200, { status: "ok", requestId });
     return;
   }
 
@@ -99,8 +116,7 @@ const server = http.createServer(async (req, res) => {
         requestId,
       });
 
-      res.writeHead(authResult.status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: authResult.error, requestId }));
+      json(res, authResult.status, { error: authResult.error, requestId });
       return;
     }
 
@@ -126,42 +142,40 @@ const server = http.createServer(async (req, res) => {
         requestId,
       });
 
-      res.writeHead(authResult.status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: authResult.error, requestId }));
+      json(res, authResult.status, { error: authResult.error, requestId });
       return;
     }
 
-    // tenant override guard
+    // tenant override guard (fail-closed)
     const guard = rejectTenantOverride(req, res);
     if (!guard.ok) {
-      res.writeHead(guard.status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: guard.error, requestId }));
+      json(res, guard.status, { error: guard.error, requestId });
       return;
     }
 
     // ----- B3 ledger write endpoint -----
     if (req.method === "POST" && req.url === "/api/inventory/ledger/events") {
-      const handled = writeLedgerEventHttp(req, res, ctx, requestId);
-      if (handled) return;
+      const handledLedgerWrite = writeLedgerEventHttp(req, res, ctx, requestId);
+      if (handledLedgerWrite) return;
     }
 
     // ----- delegate to B2 inventory router -----
-    const handled = inventoryRouter(req, res);
-    if (handled) return;
+    const handledInventory = inventoryRouter(req, res);
+    if (handledInventory) return;
 
-    res.writeHead(404, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        error: { code: "NOT_FOUND", message: "Not found" },
-        requestId,
-      })
-    );
+    // ----- delegate to B4 cycle counts router -----
+    const handledCycleCounts = cycleCountsRouter(req, res);
+    if (handledCycleCounts) return;
+
+    json(res, 404, {
+      error: { code: "NOT_FOUND", message: "Not found" },
+      requestId,
+    });
     return;
   }
 
   // ----- fallback -----
-  res.writeHead(404, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ error: "NOT_FOUND", requestId }));
+  json(res, 404, { error: "NOT_FOUND", requestId });
 });
 
 server.listen(3000, () => {
