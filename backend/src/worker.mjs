@@ -4,11 +4,12 @@
 import { getOrCreateRequestId } from "./observability/requestId.mjs";
 import { createRequestContext } from "./domain/requestContext.mjs";
 import { emitAudit } from "./observability/audit.mjs";
+import { nowUtcIso } from "./domain/time/utc.mjs";
 
 import { requireAuth } from "./auth/requireAuth.mjs";
 import { resolveSession } from "./auth/session.mjs";
 
-// Existing routers / handlers (must already exist in your repo)
+// Existing routers / handlers
 import { handleAuthMe } from "./api/auth.worker.mjs";
 import inventoryRouter from "./api/inventory.worker.mjs";
 import vendorsRouter from "./api/vendors.worker.mjs";
@@ -19,6 +20,9 @@ import rejectTenantOverride from "./middleware/rejectTenantOverride.worker.mjs";
 
 // B12 enforcement
 import { enforcePlanForRequestOrThrow, planErrorToHttp } from "./middleware/enforcePlanForRequest.worker.mjs";
+
+// Admin
+import adminTenantPlanRouter from "./api/admin/tenantPlan.worker.mjs";
 
 function json(statusCode, body, baseHeaders) {
   const h = new Headers(baseHeaders || {});
@@ -34,7 +38,7 @@ function methodNotAllowed(baseHeaders) {
   return json(405, { error: "METHOD_NOT_ALLOWED", code: "METHOD_NOT_ALLOWED" }, baseHeaders);
 }
 
-// Minimal deterministic dispatch contract for routers:
+// Deterministic dispatch contract for routers:
 // router.handle(ctx, req, baseHeaders, cfctx) => Response | null
 async function dispatchRouter(router, ctx, req, baseHeaders, cfctx) {
   if (!router || typeof router.handle !== "function") return null;
@@ -46,8 +50,12 @@ export default {
     const requestId = getOrCreateRequestId(req);
     const baseHeaders = { "x-request-id": requestId };
 
-    const url = new URL(req.url);
-    const path = url.pathname;
+    let path = null;
+    try {
+      path = new URL(req.url).pathname;
+    } catch {
+      path = null;
+    }
 
     // Context is tenant-scoped and session-derived only.
     const session = await resolveSession(req, env);
@@ -67,7 +75,7 @@ export default {
         await enforcePlanForRequestOrThrow(ctx, req);
       } catch (e) {
         const { status, body } = planErrorToHttp(e);
-        // audits are emitted by enforcement modules; still deterministic response here
+        // Audits are emitted by enforcement modules; deterministic response here.
         return json(status, body, baseHeaders);
       }
 
@@ -77,26 +85,32 @@ export default {
         return await handleAuthMe(ctx, req, baseHeaders, cfctx);
       }
 
+      // Admin (server-controlled)
+      if (path === "/api/admin/tenant/plan") {
+        const resp = await dispatchRouter(adminTenantPlanRouter, ctx, req, baseHeaders, cfctx);
+        return resp || notFound(baseHeaders);
+      }
+
       // Inventory API
-      if (path.startsWith("/api/inventory")) {
+      if (path && path.startsWith("/api/inventory")) {
         const resp = await dispatchRouter(inventoryRouter, ctx, req, baseHeaders, cfctx);
         return resp || notFound(baseHeaders);
       }
 
       // Vendors API
-      if (path.startsWith("/api/vendors")) {
+      if (path && path.startsWith("/api/vendors")) {
         const resp = await dispatchRouter(vendorsRouter, ctx, req, baseHeaders, cfctx);
         return resp || notFound(baseHeaders);
       }
 
       // Compliance API
-      if (path.startsWith("/api/compliance")) {
+      if (path && path.startsWith("/api/compliance")) {
         const resp = await dispatchRouter(complianceRouter, ctx, req, baseHeaders, cfctx);
         return resp || notFound(baseHeaders);
       }
 
       // Ledger
-      if (path.startsWith("/ledger")) {
+      if (path && path.startsWith("/ledger")) {
         const resp = await dispatchRouter(ledgerRouter, ctx, req, baseHeaders, cfctx);
         return resp || notFound(baseHeaders);
       }
@@ -105,23 +119,14 @@ export default {
     } catch (err) {
       await emitAudit(ctx, {
         action: "worker.error",
-        atUtc: new Date().toISOString(),
+        atUtc: nowUtcIso(),
         tenantId: ctx?.tenantId || null,
         requestId,
         path,
-        method: req.method || null,
+        method: req?.method || null,
       });
 
       return json(500, { error: "INTERNAL", code: "UNHANDLED_ERROR", details: null }, baseHeaders);
     }
   },
 };
-
-// ADD import
-import adminTenantPlanRouter from "./api/admin/tenantPlan.worker.mjs";
-
-// ADD route block (admin-only)
-if (path === "/api/admin/tenant/plan") {
-  const resp = await dispatchRouter(adminTenantPlanRouter, ctx, req, baseHeaders, cfctx);
-  return resp || notFound(baseHeaders);
-}
