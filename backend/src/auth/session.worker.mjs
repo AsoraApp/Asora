@@ -1,24 +1,51 @@
-// Run this in Chrome DevTools Console (on any page)
+// backend/src/auth/session.worker.mjs
+// Session resolution is intentionally deterministic and fail-closed.
+//
+// Supported inputs:
+// 1) Authorization: Bearer <token>
+// 2) Dev-only fallback: ?dev_token=<token>
+//
+// Dev token format to carry tenant scope WITHOUT a login UI:
+//   dev_token=tenant:<TENANT_ID>
+// Example:
+//   /v1/inventory/items?dev_token=tenant:demo
 
-(async () => {
-  const BASE = "https://asora.dblair1027.workers.dev";
-  const TOKEN = "dev-test-token"; // any non-empty string works per resolveSessionFromHeaders()
+function safeGetHeader(headers, name) {
+  try {
+    return headers.get(name) || headers.get(name.toLowerCase()) || "";
+  } catch {
+    return "";
+  }
+}
 
-  async function hit(path) {
-    const r = await fetch(`${BASE}${path}`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${TOKEN}`,
-        Accept: "application/json",
-      },
-    });
-    const text = await r.text();
-    console.log("=== GET", path, "===");
-    console.log("STATUS:", r.status);
-    console.log("BODY:", text);
-    return { status: r.status, body: text };
+function parseTenantFromToken(token) {
+  if (!token || typeof token !== "string") return null;
+
+  // tenant:<TENANT_ID>
+  const m = token.match(/^tenant:([A-Za-z0-9._-]{1,128})$/);
+  if (m) return m[1];
+
+  return null;
+}
+
+export function resolveSessionFromHeaders(headers, urlObj) {
+  const auth = safeGetHeader(headers, "Authorization");
+  let token = null;
+
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  if (m) token = m[1];
+
+  // Dev-only fallback: query param
+  if (!token && urlObj && urlObj.searchParams) {
+    const dev = urlObj.searchParams.get("dev_token");
+    if (dev && typeof dev === "string") token = dev;
   }
 
-  await hit("/api/auth/me");
-  await hit("/api/inventory/items");
-})();
+  const tenantId = parseTenantFromToken(token);
+
+  return {
+    isAuthenticated: !!token,
+    token: token || null,
+    tenantId: tenantId || null,
+  };
+}
