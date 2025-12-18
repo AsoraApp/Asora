@@ -13,37 +13,27 @@ function json(res, statusCode, body) {
 
 function err(res, statusCode, error, code, details) {
   let d = null;
-  if (details === null || details === undefined) {
-    d = null;
-  } else if (isPlainObject(details)) {
-    d = details;
-  } else {
-    // fail-closed: details is never a string; coerce to object
-    d = { info: String(details) };
-  }
+  if (details === null || details === undefined) d = null;
+  else if (isPlainObject(details)) d = details;
+  else d = { info: String(details) }; // never a string
   return json(res, statusCode, { error, code, details: d });
 }
 
 function badRequest(res, code, details) {
   return err(res, 400, "BAD_REQUEST", code, details);
 }
-
 function unauthorized(res, code, details) {
   return err(res, 401, "UNAUTHORIZED", code, details);
 }
-
 function forbidden(res, code, details) {
   return err(res, 403, "FORBIDDEN", code, details);
 }
-
 function notFound(res, code, details) {
   return err(res, 404, "NOT_FOUND", code, details);
 }
-
 function conflict(res, code, details) {
   return err(res, 409, "CONFLICT", code, details);
 }
-
 function methodNotAllowed(res, code, details) {
   return err(res, 405, "METHOD_NOT_ALLOWED", code, details);
 }
