@@ -8,6 +8,7 @@ import { authMeFetch } from "./auth.worker.mjs";
 import { writeLedgerEventFromJson } from "./ledger.write.worker.mjs";
 import { alertsFetchRouter } from "./alerts.worker.mjs";
 import { notificationsFetchRouter } from "./notifications.worker.mjs";
+import { inventoryReadFetchRouter } from "./inventory.read.worker.mjs";
 
 const BUILD_STAMP = "b13-security-audit-hardening-2025-12-18T01:50Z"; // change this string on each deploy attempt
 
@@ -138,6 +139,12 @@ export default async function handleFetch(request, env, cfctx) {
       });
       return denied;
     }
+  }
+
+  // Inventory read (U1-safe) — authed + tenant-scoped by /api gate above
+  {
+    const r = await inventoryReadFetchRouter(ctx, request, baseHeaders);
+    if (r) return r;
   }
 
   // Ledger write (B3)
