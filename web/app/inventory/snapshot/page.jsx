@@ -2,78 +2,63 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { asoraGetJson, getStoredDevToken } from "@/lib/asoraFetch";
-import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
-import { clearLedgerCache, getLedgerEventsCached, getLedgerCacheInfo } from "@/lib/ledgerCache";
+import AdminHeader from "@/app/_ui/AdminHeader.jsx";
+import LedgerFreshnessBar from "@/app/_ui/LedgerFreshnessBar.jsx";
+import IntegrityFooter from "@/app/_ui/IntegrityFooter.jsx";
+import { asoraGetJson } from "@/lib/asoraFetch";
+import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
+import { toCsv, downloadCsv } from "@/app/_ui/csv.js";
 import SavedViewsBar from "@/app/ui/SavedViewsBar";
-import AdminHeader from "../_ui/AdminHeader.jsx";
-import LedgerFreshnessBar from "../_ui/LedgerFreshnessBar.jsx";
-import IntegrityFooter from "../_ui/IntegrityFooter.jsx";
-import { rowsToCsv } from "../_ui/csv.js";
 
 export const runtime = "edge";
 
-const PAGE_SIZE = 500;
-
-// Snapshot focus (local-only)
-const FOCUS_STORE_KEY = "asora_view:snapshot:focusItemId";
-const SAVED_VIEWS_KEY = "asora_saved_views:snapshot:focusItemId";
+const STORE_KEY = "asora_view:snapshot:itemId";
+const SAVED_VIEWS_KEY = "asora_saved_views:snapshot:itemId";
 
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
 }
-
 function movementsHref(itemId) {
   return `/inventory/movements?itemId=${encodeURIComponent(String(itemId))}`;
 }
 
-function downloadText(filename, text, mime = "text/csv;charset=utf-8") {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+function safeReadLocalStorage(key) {
+  try {
+    return localStorage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+function safeWriteLocalStorage(key, value) {
+  try {
+    if (!value) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
+}
+
+function isFiniteNumber(x) {
+  return typeof x === "number" && Number.isFinite(x) && !Number.isNaN(x);
+}
+
+function stableStr(x) {
+  return x === null || x === undefined ? "" : String(x);
 }
 
 export default function InventorySnapshotPage() {
-  const { isCompact } = useDensity();
-  const s = isCompact ? compact : styles;
-
-  const tenantId = useMemo(() => (getStoredDevToken?.() || ""), []);
-
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+
+  const [filterItemId, setFilterItemId] = useState(() => safeReadLocalStorage(STORE_KEY));
+  const [searchText, setSearchText] = useState("");
+
+  const [items, setItems] = useState([]);
   const [events, setEvents] = useState([]);
-  const [computedAtUtc, setComputedAtUtc] = useState("");
 
-  // Focus itemId (optional, persisted)
-  const [focusItemId, setFocusItemId] = useState("");
-
-  // Paging
-  const [page, setPage] = useState(1);
-
-  // Freshness (ledger cache metadata)
-  const [freshness, setFreshness] = useState(() => getLedgerCacheInfo());
-
-  function readLocalFocus() {
-    try {
-      return localStorage.getItem(FOCUS_STORE_KEY) || "";
-    } catch {
-      return "";
-    }
-  }
-  function writeLocalFocus(v) {
-    try {
-      if (!v) localStorage.removeItem(FOCUS_STORE_KEY);
-      else localStorage.setItem(FOCUS_STORE_KEY, v);
-    } catch {
-      // ignore
-    }
-  }
+  const [renderedUtc, setRenderedUtc] = useState("");
+  const [lastFetchedUtc, setLastFetchedUtc] = useState("");
+  const [cacheStatus, setCacheStatus] = useState("unknown"); // cached | fresh | unknown
 
   async function load({ force = false } = {}) {
     setLoading(true);
@@ -81,362 +66,383 @@ export default function InventorySnapshotPage() {
     try {
       if (force) clearLedgerCache();
 
-      const r = await getLedgerEventsCached(asoraGetJson);
-      const list = Array.isArray(r?.events) ? r.events : [];
+      // Items (optional metadata layer, still read-only)
+      const inv = await asoraGetJson("/v1/inventory/items", {});
+      const invItems = Array.isArray(inv?.items)
+        ? inv.items
+        : Array.isArray(inv?.data?.items)
+          ? inv.data.items
+          : [];
+      setItems(invItems);
 
-      // Deterministic order for compute pass: ts asc, then id
+      // Ledger events (cached per-tab)
+      const led = await getLedgerEventsCached(asoraGetJson);
+      const list = Array.isArray(led?.events) ? led.events : [];
+
+      // Deterministic order: ts asc, then ledgerEventId/eventId/id
       const sorted = [...list].sort((a, b) => {
         const ta = typeof a?.ts === "string" ? a.ts : "";
         const tb = typeof b?.ts === "string" ? b.ts : "";
         if (ta < tb) return -1;
         if (ta > tb) return 1;
-        const ia = typeof a?.id === "string" ? a.id : "";
-        const ib = typeof b?.id === "string" ? b.id : "";
-        return ia.localeCompare(ib);
+
+        const ida =
+          (typeof a?.ledgerEventId === "string" && a.ledgerEventId) ||
+          (typeof a?.eventId === "string" && a.eventId) ||
+          (typeof a?.id === "string" && a.id) ||
+          "";
+        const idb =
+          (typeof b?.ledgerEventId === "string" && b.ledgerEventId) ||
+          (typeof b?.eventId === "string" && b.eventId) ||
+          (typeof b?.id === "string" && b.id) ||
+          "";
+        return ida.localeCompare(idb);
       });
 
       setEvents(sorted);
-      setComputedAtUtc(new Date().toISOString());
-      setFreshness(getLedgerCacheInfo());
+
+      const now = new Date().toISOString();
+      setLastFetchedUtc(now);
+      setRenderedUtc(now);
+      setCacheStatus(force ? "fresh" : "cached");
     } catch (e) {
-      setErr(e?.message || "Failed to load ledger events.");
+      setErr(e?.message || "Failed to load snapshot.");
+      setItems([]);
       setEvents([]);
-      setComputedAtUtc("");
-      setFreshness(getLedgerCacheInfo());
+      setRenderedUtc(new Date().toISOString());
+      setCacheStatus("unknown");
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    // hydrate persisted focus once
-    const v = readLocalFocus();
-    if (v) setFocusItemId(v);
-
     load({ force: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const focus = (focusItemId || "").trim();
+  const focus = (filterItemId || "").trim();
+  const q = (searchText || "").trim().toLowerCase();
 
-  const derived = useMemo(() => {
+  const itemsById = useMemo(() => {
     const m = new Map();
     let skippedMissingItemId = 0;
-    let skippedMissingQtyDelta = 0;
 
-    for (const e of events) {
-      if (!e || typeof e !== "object") continue;
-
-      const itemId = e.itemId;
-      if (typeof itemId !== "string" || itemId.trim() === "") {
+    for (const it of items) {
+      const id =
+        typeof it?.itemId === "string"
+          ? it.itemId
+          : typeof it?.id === "string"
+            ? it.id
+            : "";
+      if (!id) {
         skippedMissingItemId += 1;
         continue;
       }
+      m.set(id, it);
+    }
 
-      const q = e.qtyDelta;
-      if (typeof q !== "number" || Number.isNaN(q) || !Number.isFinite(q)) {
-        skippedMissingQtyDelta += 1;
+    return { map: m, skippedMissingItemId };
+  }, [items]);
+
+  const ledgerTotals = useMemo(() => {
+    const m = new Map();
+    const lastTs = new Map();
+
+    let skippedMissingItemId = 0;
+    let skippedNonNumericQtyDelta = 0;
+
+    for (const e of events) {
+      const id = typeof e?.itemId === "string" ? e.itemId : "";
+      if (!id) {
+        skippedMissingItemId += 1;
+        continue;
+      }
+      const d = e?.qtyDelta;
+      if (!isFiniteNumber(d)) {
+        skippedNonNumericQtyDelta += 1;
         continue;
       }
 
-      m.set(itemId, (m.get(itemId) || 0) + q);
+      m.set(id, (m.get(id) || 0) + d);
+
+      const ts = typeof e?.ts === "string" ? e.ts : "";
+      if (ts) {
+        const prev = lastTs.get(id) || "";
+        if (!prev || ts > prev) lastTs.set(id, ts);
+      }
     }
 
-    const rows = Array.from(m.entries())
-      .map(([itemId, derivedQuantity]) => ({ itemId, derivedQuantity }))
-      .sort((a, b) => a.itemId.localeCompare(b.itemId));
-
-    return {
-      rows,
-      skippedMissingItemId,
-      skippedMissingQtyDelta,
-    };
+    return { totals: m, lastTs, skippedMissingItemId, skippedNonNumericQtyDelta };
   }, [events]);
 
-  const filteredRows = useMemo(() => {
-    if (!focus) return derived.rows;
-    // Exact match only (deterministic)
-    return derived.rows.filter((r) => r.itemId === focus);
-  }, [derived.rows, focus]);
+  const rows = useMemo(() => {
+    // Union all ids: from items and from ledger totals
+    const ids = new Set();
+    for (const k of itemsById.map.keys()) ids.add(k);
+    for (const k of ledgerTotals.totals.keys()) ids.add(k);
 
-  useEffect(() => {
-    setPage(1);
-  }, [filteredRows.length, focus]);
+    const list = Array.from(ids).sort((a, b) => a.localeCompare(b));
 
-  const pageCount = useMemo(() => Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE)), [filteredRows.length]);
+    return list.map((id) => {
+      const it = itemsById.map.get(id) || null;
+      const name = stableStr(it?.name || it?.title || "");
+      const sku = stableStr(it?.sku || "");
+      const uom = stableStr(it?.uom || it?.unit || "");
+      const qty = ledgerTotals.totals.has(id) ? ledgerTotals.totals.get(id) : 0;
+      const lastEventTs = ledgerTotals.lastTs.get(id) || "";
 
-  const visible = useMemo(() => {
-    const end = Math.min(filteredRows.length, page * PAGE_SIZE);
-    return filteredRows.slice(0, end);
-  }, [filteredRows, page]);
+      // Status is informational only; snapshot truth is ledger-derived qty.
+      const status = it ? "KNOWN_ITEM" : "NO_ITEM_RECORD";
+
+      return {
+        itemId: id,
+        name,
+        sku,
+        uom,
+        qty,
+        lastEventTs,
+        status,
+      };
+    });
+  }, [itemsById, ledgerTotals]);
+
+  const filtered = useMemo(() => {
+    let out = rows;
+    if (focus) out = out.filter((r) => r.itemId === focus);
+
+    if (q) {
+      out = out.filter((r) => {
+        const hay = [
+          r.itemId,
+          r.name,
+          r.sku,
+          r.uom,
+          r.status,
+          String(r.qty ?? ""),
+          r.lastEventTs,
+        ]
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(q);
+      });
+    }
+
+    // Default view: deterministic sort by qty desc, then itemId asc
+    out = [...out].sort((a, b) => {
+      const qa = isFiniteNumber(a.qty) ? a.qty : 0;
+      const qb = isFiniteNumber(b.qty) ? b.qty : 0;
+      if (qa !== qb) return qb - qa;
+      return a.itemId.localeCompare(b.itemId);
+    });
+
+    return out;
+  }, [rows, focus, q]);
 
   function exportCsv() {
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const safeFocus = focus ? `_focus_${focus.replace(/[^a-zA-Z0-9_-]/g, "_")}` : "";
-    const filename = `asora_inventory_snapshot_${ts}${safeFocus}.csv`;
+    const exportTsUtc = new Date().toISOString().replace(/[:.]/g, "-");
+    const safe = (focus || "all").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const filename = `asora_inventory_snapshot_${safe}_${exportTsUtc}.csv`;
 
-    const columns = ["itemId", "derivedQuantity"];
-    const csv = rowsToCsv({ columns, rows: filteredRows });
-    downloadText(filename, csv);
+    const headers = ["itemId", "name", "sku", "uom", "qty", "lastEventTs", "status"];
+    const rowsOut = filtered.map((r) => ({
+      itemId: r.itemId,
+      name: r.name,
+      sku: r.sku,
+      uom: r.uom,
+      qty: r.qty,
+      lastEventTs: r.lastEventTs,
+      status: r.status,
+    }));
+
+    downloadCsv(filename, toCsv(headers, rowsOut, { bom: false }));
   }
 
   function applySaved(value) {
     const v = (value || "").trim();
-    setFocusItemId(v);
-    writeLocalFocus(v);
+    setFilterItemId(v);
+    safeWriteLocalStorage(STORE_KEY, v);
   }
 
-  function onFocusChange(v) {
-    setFocusItemId(v);
-    writeLocalFocus(v);
-  }
-
-  const cacheStatus = useMemo(() => {
-    if (freshness?.inFlight) return "in-flight";
-    if (freshness?.hasError) return "error";
-    if (freshness?.lastSource) return freshness.lastSource;
-    return freshness?.hasResult ? "cached" : "empty";
-  }, [freshness]);
+  const skipped = useMemo(() => {
+    const out = [];
+    if (itemsById.skippedMissingItemId) out.push({ reason: "inventory item missing id/itemId", count: itemsById.skippedMissingItemId });
+    if (ledgerTotals.skippedMissingItemId) out.push({ reason: "ledger event missing itemId", count: ledgerTotals.skippedMissingItemId });
+    if (ledgerTotals.skippedNonNumericQtyDelta) out.push({ reason: "ledger event missing/non-numeric qtyDelta", count: ledgerTotals.skippedNonNumericQtyDelta });
+    return out;
+  }, [itemsById, ledgerTotals]);
 
   return (
-    <main style={s.shell}>
+    <main style={styles.shell}>
       <AdminHeader
-        title="Inventory Snapshot (Derived)"
-        subtitle="Derived on-hand state computed client-side from ledger events. This view stores nothing and performs no writes."
-        tenantId={tenantId}
-        freshnessBar={
-          <LedgerFreshnessBar
-            lastFetchedUtc={freshness?.lastFetchedUtc || ""}
-            cacheStatus={cacheStatus}
-            onRefresh={() => load({ force: false })}
-            onClearCache={() => {
-              clearLedgerCache();
-              setFreshness(getLedgerCacheInfo());
-            }}
-          />
-        }
-      />
+        title="Inventory Snapshot"
+        subtitle="Ledger-derived quantities by itemId (sum of qtyDelta). Optional item metadata is joined read-only. Deterministic sorting applied."
+      >
+        <LedgerFreshnessBar
+          lastFetchedUtc={lastFetchedUtc}
+          cacheStatus={cacheStatus}
+          busy={loading}
+          onRefreshCached={() => load({ force: false })}
+          onRefreshForce={() => load({ force: true })}
+          onClearCache={() => {
+            clearLedgerCache();
+            setCacheStatus("unknown");
+          }}
+        />
+      </AdminHeader>
 
-      <CompactBar here="Snapshot" />
-
-      <header style={s.header}>
-        <div style={s.sub}>
-          Ledger fetch is cached per tab. Deterministic derivation: <b>ts asc</b>, then <b>id</b>.
-        </div>
-      </header>
-
-      <section style={s.card}>
-        <div style={s.controls}>
-          <button style={s.button} onClick={() => load({ force: false })} disabled={loading}>
-            {loading ? "Refreshing..." : "Recompute (cached)"}
-          </button>
-
-          <button style={s.buttonSecondary} onClick={() => load({ force: true })} disabled={loading}>
-            Recompute (force)
-          </button>
-
-          <button style={s.buttonSecondary} onClick={exportCsv} disabled={loading || filteredRows.length === 0}>
-            Export CSV
-          </button>
-
-          <label style={s.label}>
-            Focus itemId (optional)
+      <section style={styles.card}>
+        <div style={styles.controls}>
+          <label style={styles.label}>
+            Focus itemId (exact)
             <input
-              style={s.input}
-              value={focusItemId}
-              onChange={(e) => onFocusChange(e.target.value)}
-              placeholder="exact itemId (filters table)"
+              style={styles.input}
+              value={filterItemId}
+              onChange={(e) => {
+                const v = e.target.value;
+                setFilterItemId(v);
+                safeWriteLocalStorage(STORE_KEY, v);
+              }}
+              placeholder="e.g. ITEM-123"
+              spellCheck={false}
             />
           </label>
 
-          <div style={s.meta}>
-            Items: <span style={s.mono}>{derived.rows.length}</span> | Focus rows:{" "}
-            <span style={s.mono}>{filteredRows.length}</span> | Events: <span style={s.mono}>{events.length}</span> |
-            Computed at (UTC): <span style={s.mono}>{computedAtUtc || "—"}</span>
-            {focus ? (
-              <>
-                {" "}
-                | Focus: <span style={s.mono}>{focus}</span>
-              </>
-            ) : null}
-          </div>
+          <label style={styles.label}>
+            Search (text)
+            <input
+              style={styles.input}
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              placeholder="name, sku, uom, qty, status…"
+              spellCheck={false}
+            />
+          </label>
 
-          <div style={s.metaSmall}>
-            Skipped events — missing itemId: <span style={s.mono}>{derived.skippedMissingItemId}</span>, missing numeric
-            qtyDelta: <span style={s.mono}>{derived.skippedMissingQtyDelta}</span>
+          <button style={styles.buttonSecondary} onClick={exportCsv} disabled={loading || filtered.length === 0}>
+            Export CSV (current view)
+          </button>
+
+          <div style={styles.meta}>
+            Total items: <span style={styles.mono}>{rows.length}</span> | Showing: <span style={styles.mono}>{filtered.length}</span>
           </div>
         </div>
 
         <div style={{ marginTop: 12 }}>
-          <SavedViewsBar
-            storageKey={SAVED_VIEWS_KEY}
-            valueLabel="focus itemId"
-            currentValue={focus}
-            onApply={applySaved}
-          />
+          <SavedViewsBar storageKey={SAVED_VIEWS_KEY} valueLabel="itemId" currentValue={focus} onApply={applySaved} />
         </div>
 
-        {err ? <div style={s.err}>Error: {err}</div> : null}
-        {filteredRows.length === 0 && !loading ? (
-          <div style={s.empty}>
-            {focus ? "No derived rows for this focus itemId." : "No derived inventory rows to display."}
-          </div>
-        ) : null}
+        {err ? <div style={styles.err}>Error: {err}</div> : null}
+        {rows.length === 0 && !loading ? <div style={styles.empty}>No data available.</div> : null}
 
-        {filteredRows.length > 0 ? (
-          <div style={s.pagerRow}>
-            <button style={s.pagerBtn} onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
-              Prev
-            </button>
-            <div style={s.pagerText}>
-              Page <span style={s.mono}>{page}</span> / <span style={s.mono}>{pageCount}</span> (page size{" "}
-              <span style={s.mono}>{PAGE_SIZE}</span>, showing <span style={s.mono}>{visible.length}</span>)
-            </div>
-            <button style={s.pagerBtn} onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount}>
-              Next
-            </button>
-            <button
-              style={s.pagerBtnSecondary}
-              onClick={() => setPage(pageCount)}
-              disabled={page >= pageCount}
-              title="Jump to last page"
-            >
-              End
-            </button>
-          </div>
-        ) : null}
-
-        <div style={s.tableWrap}>
-          <table style={s.table}>
+        <div style={styles.tableWrap}>
+          <table style={styles.table}>
             <thead>
               <tr>
-                <th style={s.th}>itemId</th>
-                <th style={s.thRight}>derivedQuantity</th>
-                <th style={s.th}>Links</th>
+                <th style={styles.th}>itemId</th>
+                <th style={styles.th}>name</th>
+                <th style={styles.th}>sku</th>
+                <th style={styles.th}>uom</th>
+                <th style={styles.thRight}>qty</th>
+                <th style={styles.th}>lastEventTs (UTC)</th>
+                <th style={styles.th}>status</th>
+                <th style={styles.th}>Links</th>
               </tr>
             </thead>
             <tbody>
-              {visible.map((r) => (
-                <tr key={r.itemId}>
-                  <td style={s.td}>
-                    <span style={s.mono}>{r.itemId}</span>
-                  </td>
-                  <td style={s.tdRight}>
-                    <span style={s.mono}>{r.derivedQuantity}</span>
-                  </td>
-                  <td style={s.td}>
-                    <div style={s.linkRow}>
-                      <Link style={s.link} href={itemHref(r.itemId)}>
+              {filtered.map((r) => {
+                const hasItem = r.status === "KNOWN_ITEM";
+                return (
+                  <tr key={r.itemId}>
+                    <td style={styles.td}>
+                      <span style={styles.mono}>{r.itemId}</span>
+                    </td>
+                    <td style={styles.td}>{r.name || <span style={styles.muted}>—</span>}</td>
+                    <td style={styles.td}>{r.sku ? <span style={styles.mono}>{r.sku}</span> : <span style={styles.muted}>—</span>}</td>
+                    <td style={styles.td}>{r.uom ? <span style={styles.mono}>{r.uom}</span> : <span style={styles.muted}>—</span>}</td>
+                    <td style={styles.tdRight}>
+                      <span style={styles.mono}>{isFiniteNumber(r.qty) ? r.qty : 0}</span>
+                    </td>
+                    <td style={styles.td}>{r.lastEventTs ? <span style={styles.mono}>{r.lastEventTs}</span> : <span style={styles.muted}>—</span>}</td>
+                    <td style={{ ...styles.td, ...(hasItem ? null : styles.warn) }}>{r.status}</td>
+                    <td style={styles.td}>
+                      <Link style={styles.link} href={itemHref(r.itemId)}>
                         Drill-down
                       </Link>
-                      <Link style={s.linkSecondary} href={movementsHref(r.itemId)}>
+                      <span style={styles.muted}> · </span>
+                      <Link style={styles.link} href={movementsHref(r.itemId)}>
                         Movements
                       </Link>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
-
-        <IntegrityFooter
-          processedCount={events.length}
-          skippedCount={derived.skippedMissingItemId + derived.skippedMissingQtyDelta}
-          skippedReasons={[
-            `Missing itemId: ${derived.skippedMissingItemId}`,
-            `Missing/non-numeric qtyDelta: ${derived.skippedMissingQtyDelta}`,
-          ]}
-          renderUtc={computedAtUtc}
-        />
       </section>
 
-      <section style={s.card}>
-        <div style={s.noteTitle}>Notes</div>
-        <ul style={s.ul}>
-          <li>Negative totals are allowed and shown as-is (no clamping).</li>
-          <li>Derivation ignores events missing itemId or numeric qtyDelta.</li>
-          <li>“Force” recompute clears the in-tab cache and refetches ledger events.</li>
-          <li>Focus itemId filters the derived rows table only; derivation rules are unchanged.</li>
-          <li>Saved Views are local-only (localStorage) and do not affect backend behavior.</li>
-        </ul>
-      </section>
+      <IntegrityFooter
+        eventsProcessed={events.length}
+        skipped={skipped}
+        renderUtc={renderedUtc || new Date().toISOString()}
+      />
     </main>
   );
 }
 
 const styles = {
-  shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
-  header: { marginBottom: 10 },
-  sub: { color: "#555", fontSize: 13, lineHeight: 1.35 },
+  shell: { minHeight: "100vh", background: "#0b0f14", padding: 16 },
 
-  card: { border: "1px solid #e5e5e5", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fff" },
-  controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" },
+  card: {
+    maxWidth: 1200,
+    margin: "0 auto 14px auto",
+    padding: 16,
+    borderRadius: 14,
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.10)",
+    color: "#e6edf3",
+  },
 
-  button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
-  buttonSecondary: { padding: "8px 12px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", color: "#111", cursor: "pointer", fontSize: 13, height: 34 },
+  controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
+  label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 12, opacity: 0.9 },
 
-  label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
-  input: { width: 280, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
+  input: {
+    width: 280,
+    padding: "10px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(0,0,0,0.25)",
+    color: "#e6edf3",
+    outline: "none",
+    fontSize: 13,
+  },
 
-  meta: { fontSize: 13, color: "#444" },
-  metaSmall: { fontSize: 13, color: "#666" },
+  buttonSecondary: {
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(255,255,255,0.06)",
+    color: "#e6edf3",
+    cursor: "pointer",
+    fontSize: 13,
+    height: 40,
+  },
 
-  pagerRow: { marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
-  pagerBtn: { padding: "6px 10px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", cursor: "pointer", fontSize: 13 },
-  pagerBtnSecondary: { padding: "6px 10px", borderRadius: 10, border: "1px solid #bbb", background: "#f7f7f7", cursor: "pointer", fontSize: 13 },
-  pagerText: { fontSize: 13, color: "#333" },
+  meta: { fontSize: 13, opacity: 0.9, paddingBottom: 2 },
+  mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
 
-  err: { marginTop: 10, color: "#b00020", fontSize: 13 },
-  empty: { marginTop: 12, color: "#666", fontSize: 13 },
+  err: { marginTop: 10, color: "rgba(255,120,120,0.95)", fontSize: 13 },
+  empty: { marginTop: 12, opacity: 0.85, fontSize: 13 },
 
   tableWrap: { width: "100%", overflowX: "auto", marginTop: 12 },
   table: { borderCollapse: "collapse", width: "100%" },
-  th: { textAlign: "left", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
-  thRight: { textAlign: "right", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
-  td: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, verticalAlign: "top" },
-  tdRight: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, textAlign: "right", verticalAlign: "top" },
+  th: { textAlign: "left", fontSize: 12, opacity: 0.85, borderBottom: "1px solid rgba(255,255,255,0.10)", padding: "10px 8px" },
+  thRight: { textAlign: "right", fontSize: 12, opacity: 0.85, borderBottom: "1px solid rgba(255,255,255,0.10)", padding: "10px 8px" },
+  td: { padding: "10px 8px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 13, verticalAlign: "top" },
+  tdRight: { padding: "10px 8px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 13, textAlign: "right", verticalAlign: "top" },
 
-  linkRow: { display: "flex", gap: 10, flexWrap: "wrap" },
-  link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
-  linkSecondary: { color: "#444", textDecoration: "none", fontSize: 13 },
-
-  mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
-
-  noteTitle: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
-  ul: { margin: 0, paddingLeft: 18, color: "#333", fontSize: 13, lineHeight: 1.5 },
-};
-
-const compact = {
-  ...styles,
-  shell: { ...styles.shell, padding: 14 },
-  sub: { ...styles.sub, fontSize: 12 },
-  card: { ...styles.card, padding: 12, marginBottom: 12 },
-
-  button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
-  buttonSecondary: { ...styles.buttonSecondary, padding: "6px 10px", fontSize: 12, height: 30 },
-
-  label: { ...styles.label, fontSize: 12 },
-  input: { ...styles.input, padding: "6px 8px", fontSize: 12, width: 240 },
-
-  meta: { ...styles.meta, fontSize: 12 },
-  metaSmall: { ...styles.metaSmall, fontSize: 12 },
-
-  pagerBtn: { ...styles.pagerBtn, fontSize: 12 },
-  pagerBtnSecondary: { ...styles.pagerBtnSecondary, fontSize: 12 },
-  pagerText: { ...styles.pagerText, fontSize: 12 },
-
-  err: { ...styles.err, fontSize: 12 },
-  empty: { ...styles.empty, fontSize: 12 },
-
-  th: { ...styles.th, padding: "8px 6px", fontSize: 11 },
-  thRight: { ...styles.thRight, padding: "8px 6px", fontSize: 11 },
-  td: { ...styles.td, padding: "8px 6px", fontSize: 12 },
-  tdRight: { ...styles.tdRight, padding: "8px 6px", fontSize: 12 },
-
-  link: { ...styles.link, fontSize: 12 },
-  linkSecondary: { ...styles.linkSecondary, fontSize: 12 },
-
-  noteTitle: { ...styles.noteTitle, fontSize: 13 },
-  ul: { ...styles.ul, fontSize: 12 },
+  link: { color: "#9bbcff", textDecoration: "none", fontSize: 13 },
+  muted: { opacity: 0.6 },
+  warn: { color: "rgba(255,200,80,0.95)", fontWeight: 800 },
 };
