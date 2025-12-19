@@ -7,10 +7,12 @@ import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 import { usePersistedString } from "../_ui/useViewState.jsx";
 import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
+import SavedViewsBar from "@/app/ui/SavedViewsBar";
 
 export const runtime = "edge";
 
 const STORE_KEY = "asora_view:movements:itemId";
+const SAVED_VIEWS_KEY = "asora_saved_views:movements:itemId";
 const PAGE_SIZE = 200;
 
 function itemHref(itemId) {
@@ -84,7 +86,7 @@ export default function InventoryMovementsPage() {
     return events.filter((e) => typeof e?.itemId === "string" && e.itemId === focus);
   }, [events, focus]);
 
-  // Reset paging when user types a different filter (local input)
+  // Reset paging when user types a different filter (local input) OR when saved view applied.
   useEffect(() => {
     setPage(1);
   }, [focus]);
@@ -95,6 +97,13 @@ export default function InventoryMovementsPage() {
     const end = Math.min(filtered.length, page * PAGE_SIZE);
     return filtered.slice(0, end);
   }, [filtered, page]);
+
+  function applySaved(value) {
+    const v = (value || "").trim();
+    setFilterItemId(v);
+    setPersistedItemId(v);
+    setPage(1);
+  }
 
   const s = isCompact ? compact : styles;
 
@@ -146,6 +155,16 @@ export default function InventoryMovementsPage() {
             Rows: <span style={s.mono}>{filtered.length}</span> | Showing:{" "}
             <span style={s.mono}>{visible.length}</span> | Page size: <span style={s.mono}>{PAGE_SIZE}</span>
           </div>
+        </div>
+
+        {/* Saved Views (localStorage only) */}
+        <div style={{ marginTop: 12 }}>
+          <SavedViewsBar
+            storageKey={SAVED_VIEWS_KEY}
+            valueLabel="itemId"
+            currentValue={focus}
+            onApply={applySaved}
+          />
         </div>
 
         {err ? <div style={s.err}>Error: {err}</div> : null}
@@ -236,6 +255,7 @@ export default function InventoryMovementsPage() {
           <li>Sorting is deterministic: ts ascending, then id as a tie-breaker if present.</li>
           <li>Cached refresh avoids re-downloading ledger events across views in the same tab.</li>
           <li>Force refresh explicitly clears the cache and re-fetches.</li>
+          <li>Saved Views are local-only (localStorage) and do not affect backend behavior.</li>
         </ul>
       </section>
     </main>
@@ -253,8 +273,26 @@ const styles = {
   label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
   input: { width: 280, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
 
-  button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
-  buttonSecondary: { padding: "8px 12px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", color: "#111", cursor: "pointer", fontSize: 13, height: 34 },
+  button: {
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #111",
+    background: "#111",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: 13,
+    height: 34,
+  },
+  buttonSecondary: {
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #bbb",
+    background: "#fff",
+    color: "#111",
+    cursor: "pointer",
+    fontSize: 13,
+    height: 34,
+  },
 
   quickLinks: { fontSize: 13, paddingBottom: 2 },
   link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
