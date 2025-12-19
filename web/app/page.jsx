@@ -1,3 +1,4 @@
+// web/app/page.jsx
 import Link from "next/link";
 
 export default function HomePage() {
@@ -17,9 +18,6 @@ export default function HomePage() {
           <Link style={styles.link} href="/inventory/items">
             Inventory Items
           </Link>
-          <Link style={styles.linkSecondary} href="/audit">
-            Audit Log (placeholder)
-          </Link>
           <Link style={styles.link} href="/inventory/snapshot">
             Inventory Snapshot
           </Link>
@@ -29,11 +27,17 @@ export default function HomePage() {
           <Link style={styles.link} href="/inventory/item">
             Item Drill-Down
           </Link>
+          <Link style={styles.link} href="/inventory/reconciliation">
+            Inventory Reconciliation
+          </Link>
           <Link style={styles.link} href="/inventory/anomalies">
             Inventory Anomalies
           </Link>
-          <Link style={styles.link} href="/inventory/reconciliation">
-            Inventory Reconciliation
+          <Link style={styles.link} href="/inventory/exports">
+            Integrity Exports (Evidence)
+          </Link>
+          <Link style={styles.linkSecondary} href="/audit">
+            Audit Log (placeholder)
           </Link>
         </div>
       </section>
@@ -43,9 +47,8 @@ export default function HomePage() {
         <ul style={styles.ul}>
           <li>Read-only UI.</li>
           <li>Ledger remains the only write path.</li>
-          <li>Inventory reads are ledger-derived.</li>
-          <li>Use <code>dev_token</code> for tenant scoping (no login UI).</li>
-          <li>Audit Log UI is a placeholder until a read endpoint exists.</li>
+          <li>Use dev_token for now (no login UI).</li>
+          <li>All derived views are deterministic and client-generated.</li>
         </ul>
       </section>
     </main>
@@ -55,40 +58,57 @@ export default function HomePage() {
 const styles = {
   shell: {
     minHeight: "100vh",
-    background: "#0b0f14",
-    color: "#e6edf3",
-    padding: 24
+    padding: "24px",
+    fontFamily:
+      'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"',
+    background: "#0b1220",
+    color: "#e5e7eb",
   },
-  header: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 18 },
-  brand: { fontSize: 24, fontWeight: 700 },
-  sub: { fontSize: 14, opacity: 0.8 },
+  header: {
+    maxWidth: "1100px",
+    margin: "0 auto 16px auto",
+    padding: "16px",
+    borderRadius: "14px",
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.08)",
+  },
+  brand: { fontSize: "20px", fontWeight: 800, letterSpacing: "0.3px" },
+  sub: { fontSize: "13px", opacity: 0.8, marginTop: "6px" },
+
   card: {
-    border: "1px solid rgba(255,255,255,0.10)",
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 14,
-    background: "rgba(255,255,255,0.02)"
+    maxWidth: "1100px",
+    margin: "0 auto 16px auto",
+    padding: "16px",
+    borderRadius: "14px",
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.08)",
   },
-  cardTitle: { fontSize: 14, fontWeight: 700, marginBottom: 10, opacity: 0.9 },
-  links: { display: "flex", gap: 12, flexWrap: "wrap" },
+  cardTitle: { fontSize: "14px", fontWeight: 700, marginBottom: "10px" },
+  links: { display: "flex", flexWrap: "wrap", gap: "10px" },
   link: {
-    display: "inline-block",
-    padding: "10px 12px",
-    borderRadius: 10,
-    border: "1px solid rgba(255,255,255,0.14)",
-    color: "#e6edf3",
+    padding: "8px 10px",
+    borderRadius: "10px",
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.04)",
+    color: "#e5e7eb",
     textDecoration: "none",
-    background: "rgba(255,255,255,0.03)"
+    fontSize: "13px",
   },
   linkSecondary: {
-    display: "inline-block",
-    padding: "10px 12px",
-    borderRadius: 10,
-    border: "1px dashed rgba(255,255,255,0.18)",
-    color: "#e6edf3",
+    padding: "8px 10px",
+    borderRadius: "10px",
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: "rgba(255,255,255,0.02)",
+    color: "#e5e7eb",
     textDecoration: "none",
-    background: "rgba(255,255,255,0.01)",
-    opacity: 0.85
+    fontSize: "13px",
+    opacity: 0.9,
   },
-  ul: { margin: 0, paddingLeft: 18, opacity: 0.85 }
+  ul: {
+    margin: 0,
+    paddingLeft: "18px",
+    lineHeight: 1.6,
+    opacity: 0.9,
+    fontSize: "13px",
+  },
 };
