@@ -5,8 +5,11 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
+import { usePersistedString } from "../_ui/useViewState.jsx";
 
 export const runtime = "edge";
+
+const STORE_KEY = "asora_view:anomalies:itemId";
 
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
@@ -24,11 +27,22 @@ export default function InventoryAnomaliesPage() {
   const { isCompact } = useDensity();
 
   const sp = useSearchParams();
-  const initialFocus = sp?.get("itemId") || "";
+  const qpItemId = sp?.get("itemId") || "";
+
+  const [persistedFocus, setPersistedFocus] = usePersistedString(STORE_KEY, "");
+  const [focusItemId, setFocusItemId] = useState(qpItemId || persistedFocus);
+
+  // If URL itemId changes, adopt it and persist it.
+  useEffect(() => {
+    if (qpItemId && qpItemId !== focusItemId) {
+      setFocusItemId(qpItemId);
+      setPersistedFocus(qpItemId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qpItemId]);
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [focusItemId, setFocusItemId] = useState(initialFocus);
 
   const [eventsMissingItemId, setEventsMissingItemId] = useState([]);
   const [eventsMissingQtyDelta, setEventsMissingQtyDelta] = useState([]);
@@ -146,9 +160,7 @@ export default function InventoryAnomaliesPage() {
 
       <header style={s.header}>
         <div style={s.title}>Inventory Anomalies</div>
-        <div style={s.sub}>
-          Integrity signals derived from ledger events (diagnostic only; no correction or mutation). Deterministic sorting.
-        </div>
+        <div style={s.sub}>Integrity signals derived from ledger events (diagnostic only). Focus is saved locally.</div>
       </header>
 
       <section style={s.card}>
@@ -158,7 +170,11 @@ export default function InventoryAnomaliesPage() {
             <input
               style={s.input}
               value={focusItemId}
-              onChange={(e) => setFocusItemId(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setFocusItemId(v);
+                setPersistedFocus(v);
+              }}
               placeholder="e.g. ITEM-123"
             />
           </label>
@@ -192,7 +208,7 @@ export default function InventoryAnomaliesPage() {
 
       <section style={s.card}>
         <div style={s.sectionTitle}>1) Events Missing itemId</div>
-        <div style={s.sectionSub}>These events cannot be attributed to an item; they are excluded from all per-item derivations.</div>
+        <div style={s.sectionSub}>These events cannot be attributed to an item; excluded from per-item derivations.</div>
 
         {eventsMissingItemId.length === 0 && !loading ? (
           <div style={s.empty}>None detected.</div>
@@ -399,7 +415,7 @@ export default function InventoryAnomaliesPage() {
       <section style={s.card}>
         <div style={s.noteTitle}>Notes</div>
         <ul style={s.ul}>
-          <li>Query parameter support: /inventory/anomalies?itemId=… focuses all item-scoped anomaly tables to one item.</li>
+          <li>URL itemId overrides saved focus and will be persisted.</li>
           <li>Missing itemId events are excluded from item-level derivations by definition.</li>
           <li>Missing qtyDelta events do not contribute to derived totals.</li>
         </ul>
