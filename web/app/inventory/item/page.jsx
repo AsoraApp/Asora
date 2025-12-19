@@ -5,8 +5,11 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
+import { usePersistedString } from "../_ui/useViewState.jsx";
 
 export const runtime = "edge";
+
+const STORE_KEY = "asora_view:item:itemId";
 
 function movementsHref(itemId) {
   return `/inventory/movements?itemId=${encodeURIComponent(String(itemId))}`;
@@ -16,13 +19,24 @@ export default function InventoryItemDrillDownPage() {
   const { isCompact } = useDensity();
 
   const sp = useSearchParams();
-  const initialItemId = sp?.get("itemId") || "";
+  const qpItemId = sp?.get("itemId") || "";
 
-  const [itemId, setItemId] = useState(initialItemId);
+  const [persistedItemId, setPersistedItemId] = usePersistedString(STORE_KEY, "");
+  const [itemId, setItemId] = useState(qpItemId || persistedItemId);
+
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [events, setEvents] = useState([]);
   const [missingQtyDeltaCount, setMissingQtyDeltaCount] = useState(0);
+
+  // If URL itemId changes, adopt it and persist it.
+  useEffect(() => {
+    if (qpItemId && qpItemId !== itemId) {
+      setItemId(qpItemId);
+      setPersistedItemId(qpItemId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qpItemId]);
 
   async function load(forItemId) {
     const iid = (forItemId || "").trim();
@@ -68,8 +82,10 @@ export default function InventoryItemDrillDownPage() {
     }
   }
 
+  // Auto-load on first mount if we have an initial id (qp or persisted).
   useEffect(() => {
-    if (initialItemId.trim()) load(initialItemId);
+    const iid = (itemId || "").trim();
+    if (iid) load(iid);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -82,7 +98,7 @@ export default function InventoryItemDrillDownPage() {
     return sum;
   }, [events]);
 
-  const iid = itemId.trim();
+  const iid = (itemId || "").trim();
   const s = isCompact ? compact : styles;
 
   return (
@@ -91,16 +107,32 @@ export default function InventoryItemDrillDownPage() {
 
       <header style={s.header}>
         <div style={s.title}>Item Drill-Down</div>
-        <div style={s.sub}>Ledger events affecting a single itemId (read-only; deterministic ordering).</div>
+        <div style={s.sub}>Ledger events affecting a single itemId (read-only). itemId is saved locally.</div>
       </header>
 
       <section style={s.card}>
         <div style={s.controls}>
           <label style={s.label}>
             itemId
-            <input style={s.input} value={itemId} onChange={(e) => setItemId(e.target.value)} placeholder="Enter itemId" />
+            <input
+              style={s.input}
+              value={itemId}
+              onChange={(e) => {
+                const v = e.target.value;
+                setItemId(v);
+                setPersistedItemId(v);
+              }}
+              placeholder="Enter itemId"
+            />
           </label>
-          <button style={s.button} onClick={() => load(itemId)} disabled={loading}>
+          <button
+            style={s.button}
+            onClick={() => {
+              setPersistedItemId(itemId);
+              load(itemId);
+            }}
+            disabled={loading}
+          >
             {loading ? "Loading..." : "Load"}
           </button>
 
@@ -177,7 +209,7 @@ export default function InventoryItemDrillDownPage() {
       <section style={s.card}>
         <div style={s.noteTitle}>Notes</div>
         <ul style={s.ul}>
-          <li>Query parameter support: /inventory/item?itemId=… pre-fills and auto-loads on first render.</li>
+          <li>URL itemId overrides saved value and will be persisted.</li>
           <li>Derived totals are computed client-side by summing numeric qtyDelta values only.</li>
         </ul>
       </section>
