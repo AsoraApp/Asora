@@ -5,10 +5,14 @@ import Link from "next/link";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
+import SavedViewsBar from "@/app/ui/SavedViewsBar";
 
 export const runtime = "edge";
 
 const PAGE_SIZE = 200;
+
+const FOCUS_STORE_KEY = "asora_view:anomalies:focusItemId";
+const SAVED_VIEWS_KEY = "asora_saved_views:anomalies:focusItemId";
 
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
@@ -16,6 +20,22 @@ function itemHref(itemId) {
 
 function movementsHref(itemId) {
   return `/inventory/movements?itemId=${encodeURIComponent(String(itemId))}`;
+}
+
+function safeReadLocalStorage(key) {
+  try {
+    return localStorage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+function safeWriteLocalStorage(key, value) {
+  try {
+    if (!value) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
 }
 
 export default function InventoryAnomaliesPage() {
@@ -26,11 +46,20 @@ export default function InventoryAnomaliesPage() {
   const [err, setErr] = useState("");
   const [events, setEvents] = useState([]);
 
+  // Focus itemId (local-only)
+  const [focusItemId, setFocusItemId] = useState("");
+
   // Paging controls per table (deterministic)
   const [pageMissingItemId, setPageMissingItemId] = useState(1);
   const [pageMissingQtyDelta, setPageMissingQtyDelta] = useState(1);
   const [pageNegativeDelta, setPageNegativeDelta] = useState(1);
   const [pageNegativeTotals, setPageNegativeTotals] = useState(1);
+
+  useEffect(() => {
+    // hydrate focus from localStorage once
+    const v = safeReadLocalStorage(FOCUS_STORE_KEY);
+    if (v) setFocusItemId(v);
+  }, []);
 
   async function load({ force = false } = {}) {
     setLoading(true);
@@ -65,6 +94,8 @@ export default function InventoryAnomaliesPage() {
     load({ force: false });
   }, []);
 
+  const focus = (focusItemId || "").trim();
+
   const analysis = useMemo(() => {
     const missingItemId = [];
     const missingQtyDelta = [];
@@ -95,11 +126,22 @@ export default function InventoryAnomaliesPage() {
     return { missingItemId, missingQtyDelta, negativeDelta, negativeTotals };
   }, [events]);
 
+  // Apply focus filtering ONLY to item-specific sections
+  const filteredNegativeDelta = useMemo(() => {
+    if (!focus) return analysis.negativeDelta;
+    return analysis.negativeDelta.filter((e) => typeof e?.itemId === "string" && e.itemId === focus);
+  }, [analysis.negativeDelta, focus]);
+
+  const filteredNegativeTotals = useMemo(() => {
+    if (!focus) return analysis.negativeTotals;
+    return analysis.negativeTotals.filter((r) => r.itemId === focus);
+  }, [analysis.negativeTotals, focus]);
+
   // Reset paging when dataset sizes change
   useEffect(() => setPageMissingItemId(1), [analysis.missingItemId.length]);
   useEffect(() => setPageMissingQtyDelta(1), [analysis.missingQtyDelta.length]);
-  useEffect(() => setPageNegativeDelta(1), [analysis.negativeDelta.length]);
-  useEffect(() => setPageNegativeTotals(1), [analysis.negativeTotals.length]);
+  useEffect(() => setPageNegativeDelta(1), [filteredNegativeDelta.length]);
+  useEffect(() => setPageNegativeTotals(1), [filteredNegativeTotals.length]);
 
   function sliceToPage(list, page) {
     const end = Math.min(list.length, page * PAGE_SIZE);
@@ -118,12 +160,12 @@ export default function InventoryAnomaliesPage() {
     [analysis.missingQtyDelta, pageMissingQtyDelta]
   );
   const visibleNegativeDelta = useMemo(
-    () => sliceToPage(analysis.negativeDelta, pageNegativeDelta),
-    [analysis.negativeDelta, pageNegativeDelta]
+    () => sliceToPage(filteredNegativeDelta, pageNegativeDelta),
+    [filteredNegativeDelta, pageNegativeDelta]
   );
   const visibleNegativeTotals = useMemo(
-    () => sliceToPage(analysis.negativeTotals, pageNegativeTotals),
-    [analysis.negativeTotals, pageNegativeTotals]
+    () => sliceToPage(filteredNegativeTotals, pageNegativeTotals),
+    [filteredNegativeTotals, pageNegativeTotals]
   );
 
   function Pager({ list, page, setPage }) {
@@ -147,6 +189,12 @@ export default function InventoryAnomaliesPage() {
     );
   }
 
+  function applySaved(value) {
+    const v = (value || "").trim();
+    setFocusItemId(v);
+    safeWriteLocalStorage(FOCUS_STORE_KEY, v);
+  }
+
   return (
     <main style={s.shell}>
       <CompactBar here="Anomalies" />
@@ -167,9 +215,39 @@ export default function InventoryAnomaliesPage() {
           <button style={s.buttonSecondary} onClick={() => load({ force: true })} disabled={loading}>
             Refresh (force)
           </button>
+
+          <label style={s.label}>
+            Focus itemId (optional)
+            <input
+              style={s.input}
+              value={focusItemId}
+              onChange={(e) => {
+                const v = e.target.value;
+                setFocusItemId(v);
+                safeWriteLocalStorage(FOCUS_STORE_KEY, v);
+              }}
+              placeholder="exact itemId (filters item-specific sections)"
+            />
+          </label>
+
           <div style={s.meta}>
             Events analyzed: <span style={s.mono}>{events.length}</span>
+            {focus ? (
+              <>
+                {" "}
+                | Focus: <span style={s.mono}>{focus}</span>
+              </>
+            ) : null}
           </div>
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <SavedViewsBar
+            storageKey={SAVED_VIEWS_KEY}
+            valueLabel="focus itemId"
+            currentValue={focus}
+            onApply={applySaved}
+          />
         </div>
 
         {err ? <div style={s.err}>Error: {err}</div> : null}
@@ -215,14 +293,22 @@ export default function InventoryAnomaliesPage() {
                 const key = id || `${ts}:missingItemId:${idx}`;
                 return (
                   <tr key={key}>
-                    <td style={s.td}><span style={s.mono}>{ts}</span></td>
+                    <td style={s.td}>
+                      <span style={s.mono}>{ts}</span>
+                    </td>
                     <td style={s.td}>{eventType}</td>
-                    <td style={s.td}><span style={s.mono}>{id || "—"}</span></td>
+                    <td style={s.td}>
+                      <span style={s.mono}>{id || "—"}</span>
+                    </td>
                   </tr>
                 );
               })}
               {analysis.missingItemId.length === 0 ? (
-                <tr><td style={s.td} colSpan={3}><span style={s.muted}>None.</span></td></tr>
+                <tr>
+                  <td style={s.td} colSpan={3}>
+                    <span style={s.muted}>None.</span>
+                  </td>
+                </tr>
               ) : null}
             </tbody>
           </table>
@@ -252,15 +338,25 @@ export default function InventoryAnomaliesPage() {
                 const key = id || `${ts}:missingQty:${idx}`;
                 return (
                   <tr key={key}>
-                    <td style={s.td}><span style={s.mono}>{ts}</span></td>
-                    <td style={s.td}><span style={s.mono}>{itemId || "—"}</span></td>
+                    <td style={s.td}>
+                      <span style={s.mono}>{ts}</span>
+                    </td>
+                    <td style={s.td}>
+                      <span style={s.mono}>{itemId || "—"}</span>
+                    </td>
                     <td style={s.td}>{eventType}</td>
-                    <td style={s.td}><span style={s.mono}>{id || "—"}</span></td>
+                    <td style={s.td}>
+                      <span style={s.mono}>{id || "—"}</span>
+                    </td>
                   </tr>
                 );
               })}
               {analysis.missingQtyDelta.length === 0 ? (
-                <tr><td style={s.td} colSpan={4}><span style={s.muted}>None.</span></td></tr>
+                <tr>
+                  <td style={s.td} colSpan={4}>
+                    <span style={s.muted}>None.</span>
+                  </td>
+                </tr>
               ) : null}
             </tbody>
           </table>
@@ -268,8 +364,10 @@ export default function InventoryAnomaliesPage() {
       </section>
 
       <section style={s.card}>
-        <div style={s.sectionTitle}>Events with negative qtyDelta</div>
-        <Pager list={analysis.negativeDelta} page={pageNegativeDelta} setPage={setPageNegativeDelta} />
+        <div style={s.sectionTitle}>
+          Events with negative qtyDelta {focus ? <span style={s.muted}>(filtered)</span> : null}
+        </div>
+        <Pager list={filteredNegativeDelta} page={pageNegativeDelta} setPage={setPageNegativeDelta} />
 
         <div style={s.tableWrap}>
           <table style={s.table}>
@@ -293,8 +391,12 @@ export default function InventoryAnomaliesPage() {
 
                 return (
                   <tr key={key}>
-                    <td style={s.td}><span style={s.mono}>{ts}</span></td>
-                    <td style={s.td}><span style={s.mono}>{itemId || "—"}</span></td>
+                    <td style={s.td}>
+                      <span style={s.mono}>{ts}</span>
+                    </td>
+                    <td style={s.td}>
+                      <span style={s.mono}>{itemId || "—"}</span>
+                    </td>
                     <td style={{ ...s.tdRight, ...(q !== null && q < 0 ? s.neg : null) }}>
                       <span style={s.mono}>{q !== null ? q : "—"}</span>
                     </td>
@@ -302,8 +404,12 @@ export default function InventoryAnomaliesPage() {
                     <td style={s.td}>
                       {itemId ? (
                         <div style={s.linkRow}>
-                          <Link style={s.link} href={itemHref(itemId)}>Drill-down</Link>
-                          <Link style={s.linkSecondary} href={movementsHref(itemId)}>Movements</Link>
+                          <Link style={s.link} href={itemHref(itemId)}>
+                            Drill-down
+                          </Link>
+                          <Link style={s.linkSecondary} href={movementsHref(itemId)}>
+                            Movements
+                          </Link>
                         </div>
                       ) : (
                         <span style={s.muted}>—</span>
@@ -312,8 +418,12 @@ export default function InventoryAnomaliesPage() {
                   </tr>
                 );
               })}
-              {analysis.negativeDelta.length === 0 ? (
-                <tr><td style={s.td} colSpan={5}><span style={s.muted}>None.</span></td></tr>
+              {filteredNegativeDelta.length === 0 ? (
+                <tr>
+                  <td style={s.td} colSpan={5}>
+                    <span style={s.muted}>None.</span>
+                  </td>
+                </tr>
               ) : null}
             </tbody>
           </table>
@@ -321,8 +431,10 @@ export default function InventoryAnomaliesPage() {
       </section>
 
       <section style={s.card}>
-        <div style={s.sectionTitle}>Items with negative derived totals</div>
-        <Pager list={analysis.negativeTotals} page={pageNegativeTotals} setPage={setPageNegativeTotals} />
+        <div style={s.sectionTitle}>
+          Items with negative derived totals {focus ? <span style={s.muted}>(filtered)</span> : null}
+        </div>
+        <Pager list={filteredNegativeTotals} page={pageNegativeTotals} setPage={setPageNegativeTotals} />
 
         <div style={s.tableWrap}>
           <table style={s.table}>
@@ -336,18 +448,30 @@ export default function InventoryAnomaliesPage() {
             <tbody>
               {visibleNegativeTotals.map((r) => (
                 <tr key={r.itemId}>
-                  <td style={s.td}><span style={s.mono}>{r.itemId}</span></td>
-                  <td style={{ ...s.tdRight, ...s.neg }}><span style={s.mono}>{r.derivedTotal}</span></td>
+                  <td style={s.td}>
+                    <span style={s.mono}>{r.itemId}</span>
+                  </td>
+                  <td style={{ ...s.tdRight, ...s.neg }}>
+                    <span style={s.mono}>{r.derivedTotal}</span>
+                  </td>
                   <td style={s.td}>
                     <div style={s.linkRow}>
-                      <Link style={s.link} href={itemHref(r.itemId)}>Drill-down</Link>
-                      <Link style={s.linkSecondary} href={movementsHref(r.itemId)}>Movements</Link>
+                      <Link style={s.link} href={itemHref(r.itemId)}>
+                        Drill-down
+                      </Link>
+                      <Link style={s.linkSecondary} href={movementsHref(r.itemId)}>
+                        Movements
+                      </Link>
                     </div>
                   </td>
                 </tr>
               ))}
-              {analysis.negativeTotals.length === 0 ? (
-                <tr><td style={s.td} colSpan={3}><span style={s.muted}>None.</span></td></tr>
+              {filteredNegativeTotals.length === 0 ? (
+                <tr>
+                  <td style={s.td} colSpan={3}>
+                    <span style={s.muted}>None.</span>
+                  </td>
+                </tr>
               ) : null}
             </tbody>
           </table>
@@ -357,9 +481,11 @@ export default function InventoryAnomaliesPage() {
       <section style={s.card}>
         <div style={s.noteTitle}>Notes</div>
         <ul style={s.ul}>
-          <li>These are diagnostic signals only; the UI never mutates state.</li>
+          <li>These are diagnostic signals only; the UI never mutates inventory truth.</li>
           <li>Negative totals are derived by summing numeric qtyDelta values per itemId.</li>
           <li>“Force” refresh clears the in-tab cache and re-fetches ledger events.</li>
+          <li>Focus itemId filters item-specific sections only. Missing-field sections remain unfiltered.</li>
+          <li>Saved Views are local-only (localStorage) and do not affect backend behavior.</li>
         </ul>
       </section>
     </main>
@@ -377,6 +503,9 @@ const styles = {
   button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
   buttonSecondary: { padding: "8px 12px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", color: "#111", cursor: "pointer", fontSize: 13, height: 34 },
   meta: { fontSize: 13, color: "#444" },
+
+  label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
+  input: { width: 320, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
 
   grid: { marginTop: 12, display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 },
   kpi: { border: "1px solid #eee", borderRadius: 12, padding: 12, background: "#fafafa" },
@@ -422,6 +551,9 @@ const compact = {
   button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
   buttonSecondary: { ...styles.buttonSecondary, padding: "6px 10px", fontSize: 12, height: 30 },
   meta: { ...styles.meta, fontSize: 12 },
+
+  label: { ...styles.label, fontSize: 12 },
+  input: { ...styles.input, padding: "6px 8px", fontSize: 12, width: 260 },
 
   grid: { ...styles.grid, gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 },
   kpiValue: { ...styles.kpiValue, fontSize: 20 },
