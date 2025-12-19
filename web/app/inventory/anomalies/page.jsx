@@ -1,21 +1,113 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
 
+export const runtime = "edge";
+
+function itemHref(itemId) {
+  return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
+}
+
+function movementsHref(itemId) {
+  return `/inventory/movements?itemId=${encodeURIComponent(String(itemId))}`;
+}
+
+function isFiniteNumber(n) {
+  return typeof n === "number" && Number.isFinite(n) && !Number.isNaN(n);
+}
+
 export default function InventoryAnomaliesPage() {
-  const [events, setEvents] = useState([]);
+  const sp = useSearchParams();
+  const initialFocus = sp?.get("itemId") || "";
+
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [err, setErr] = useState("");
+  const [focusItemId, setFocusItemId] = useState(initialFocus);
+
+  const [eventsMissingItemId, setEventsMissingItemId] = useState([]);
+  const [eventsMissingQtyDelta, setEventsMissingQtyDelta] = useState([]);
+  const [eventsNegativeQtyDelta, setEventsNegativeQtyDelta] = useState([]);
+  const [itemsNegativeTotals, setItemsNegativeTotals] = useState([]); // { itemId, derivedQuantity }
 
   async function load() {
     setLoading(true);
-    setError(null);
+    setErr("");
     try {
       const r = await asoraGetJson("/v1/ledger/events", {});
-      setEvents(Array.isArray(r?.events) ? r.events : []);
-    } catch {
-      setError("Failed to load ledger events");
+      const events = Array.isArray(r?.events) ? r.events : [];
+
+      const missingItemId = [];
+      const missingQtyDelta = [];
+      const negativeQtyDelta = [];
+
+      const totals = new Map(); // itemId -> sum(qtyDelta) for numeric qtyDelta only
+
+      for (const e of events) {
+        if (!e || typeof e !== "object") continue;
+
+        const itemId = e.itemId;
+        const hasItemId = typeof itemId === "string" && itemId.trim() !== "";
+
+        const q = e.qtyDelta;
+        const hasQtyDelta = isFiniteNumber(q);
+
+        if (!hasItemId) {
+          missingItemId.push(e);
+          continue; // cannot attribute to an item
+        }
+
+        if (!hasQtyDelta) {
+          missingQtyDelta.push(e);
+          continue; // do not contribute to totals
+        }
+
+        if (q < 0) negativeQtyDelta.push(e);
+
+        totals.set(itemId, (totals.get(itemId) || 0) + q);
+      }
+
+      // Deterministic ordering:
+      // - missingItemId: by ts asc then id
+      // - missingQtyDelta: by itemId asc then ts asc then id
+      // - negativeQtyDelta: by itemId asc then ts asc then id
+      // - negativeTotals: by itemId asc
+
+      const byTsThenId = (a, b) => {
+        const ta = typeof a?.ts === "string" ? a.ts : "";
+        const tb = typeof b?.ts === "string" ? b.ts : "";
+        if (ta < tb) return -1;
+        if (ta > tb) return 1;
+        const ia = typeof a?.id === "string" ? a.id : "";
+        const ib = typeof b?.id === "string" ? b.id : "";
+        return ia.localeCompare(ib);
+      };
+
+      const byItemThenTsThenId = (a, b) => {
+        const ia = typeof a?.itemId === "string" ? a.itemId : "";
+        const ib = typeof b?.itemId === "string" ? b.itemId : "";
+        const c = ia.localeCompare(ib);
+        if (c !== 0) return c;
+        return byTsThenId(a, b);
+      };
+
+      const negTotals = Array.from(totals.entries())
+        .map(([itemId, derivedQuantity]) => ({ itemId, derivedQuantity }))
+        .filter((x) => isFiniteNumber(x.derivedQuantity) && x.derivedQuantity < 0)
+        .sort((a, b) => a.itemId.localeCompare(b.itemId));
+
+      setEventsMissingItemId([...missingItemId].sort(byTsThenId));
+      setEventsMissingQtyDelta([...missingQtyDelta].sort(byItemThenTsThenId));
+      setEventsNegativeQtyDelta([...negativeQtyDelta].sort(byItemThenTsThenId));
+      setItemsNegativeTotals(negTotals);
+    } catch (e) {
+      setErr(e?.message || "Failed to load ledger events.");
+      setEventsMissingItemId([]);
+      setEventsMissingQtyDelta([]);
+      setEventsNegativeQtyDelta([]);
+      setItemsNegativeTotals([]);
     } finally {
       setLoading(false);
     }
@@ -25,152 +117,356 @@ export default function InventoryAnomaliesPage() {
     load();
   }, []);
 
-  const analysis = useMemo(() => {
-    let missingItemId = [];
-    let missingQtyDelta = [];
-    let negativeDeltas = [];
-    const totals = new Map();
+  const focus = (focusItemId || "").trim();
 
-    events.forEach((e, idx) => {
-      const id = e?.itemId;
-      const delta = e?.qtyDelta;
+  const filteredMissingQtyDelta = useMemo(() => {
+    if (!focus) return eventsMissingQtyDelta;
+    return eventsMissingQtyDelta.filter((e) => typeof e?.itemId === "string" && e.itemId === focus);
+  }, [eventsMissingQtyDelta, focus]);
 
-      if (!id) {
-        missingItemId.push({ idx, event: e });
-        return;
-      }
+  const filteredNegativeQtyDelta = useMemo(() => {
+    if (!focus) return eventsNegativeQtyDelta;
+    return eventsNegativeQtyDelta.filter((e) => typeof e?.itemId === "string" && e.itemId === focus);
+  }, [eventsNegativeQtyDelta, focus]);
 
-      if (typeof delta !== "number" || Number.isNaN(delta)) {
-        missingQtyDelta.push({ idx, event: e });
-        return;
-      }
+  const filteredNegativeTotals = useMemo(() => {
+    if (!focus) return itemsNegativeTotals;
+    return itemsNegativeTotals.filter((r) => r.itemId === focus);
+  }, [itemsNegativeTotals, focus]);
 
-      if (!totals.has(id)) totals.set(id, 0);
-      totals.set(id, totals.get(id) + delta);
-
-      if (delta < 0) {
-        negativeDeltas.push({ idx, event: e });
-      }
-    });
-
-    const negativeOnHand = Array.from(totals.entries())
-      .filter(([, qty]) => qty < 0)
-      .map(([itemId, qty]) => ({ itemId, qty }));
-
+  const totals = useMemo(() => {
     return {
-      missingItemId,
-      missingQtyDelta,
-      negativeDeltas,
-      negativeOnHand
+      missingItemId: eventsMissingItemId.length,
+      missingQtyDelta: filteredMissingQtyDelta.length,
+      negativeQtyDelta: filteredNegativeQtyDelta.length,
+      negativeTotals: filteredNegativeTotals.length,
     };
-  }, [events]);
+  }, [eventsMissingItemId.length, filteredMissingQtyDelta.length, filteredNegativeQtyDelta.length, filteredNegativeTotals.length]);
 
   return (
     <main style={styles.shell}>
       <header style={styles.header}>
-        <h1 style={styles.title}>Inventory Anomalies</h1>
+        <div style={styles.title}>Inventory Anomalies</div>
         <div style={styles.sub}>
-          Read-only integrity signals derived from ledger data
+          Integrity signals derived from ledger events (diagnostic only; no correction or mutation). Deterministic sorting.
         </div>
       </header>
 
       <section style={styles.card}>
-        <button onClick={load} style={styles.button} disabled={loading}>
-          Refresh
-        </button>
-      </section>
+        <div style={styles.controls}>
+          <label style={styles.label}>
+            Focus itemId (optional)
+            <input
+              style={styles.input}
+              value={focusItemId}
+              onChange={(e) => setFocusItemId(e.target.value)}
+              placeholder="e.g. ITEM-123"
+            />
+          </label>
 
-      {error && <section style={styles.cardError}>{error}</section>}
+          <button style={styles.button} onClick={load} disabled={loading}>
+            {loading ? "Refreshing..." : "Refresh"}
+          </button>
+
+          {focus ? (
+            <div style={styles.quickLinks}>
+              <Link style={styles.link} href={itemHref(focus)}>
+                Drill-down for {focus}
+              </Link>
+              <span style={styles.dot}>·</span>
+              <Link style={styles.linkSecondary} href={movementsHref(focus)}>
+                Movements for {focus}
+              </Link>
+            </div>
+          ) : null}
+
+          <div style={styles.meta}>
+            Missing itemId: <span style={styles.mono}>{totals.missingItemId}</span> | Missing qtyDelta:{" "}
+            <span style={styles.mono}>{totals.missingQtyDelta}</span> | Negative qtyDelta:{" "}
+            <span style={styles.mono}>{totals.negativeQtyDelta}</span> | Negative totals:{" "}
+            <span style={styles.mono}>{totals.negativeTotals}</span>
+          </div>
+        </div>
+
+        {err ? <div style={styles.err}>Error: {err}</div> : null}
+      </section>
 
       <section style={styles.card}>
-        <h3 style={styles.h3}>Summary</h3>
-        <ul style={styles.ul}>
-          <li>Events missing itemId: {analysis.missingItemId.length}</li>
-          <li>Events missing qtyDelta: {analysis.missingQtyDelta.length}</li>
-          <li>Events with negative qtyDelta: {analysis.negativeDeltas.length}</li>
-          <li>Items with negative on-hand: {analysis.negativeOnHand.length}</li>
-        </ul>
+        <div style={styles.sectionTitle}>1) Events Missing itemId</div>
+        <div style={styles.sectionSub}>These events cannot be attributed to an item; they are excluded from all per-item derivations.</div>
+
+        {eventsMissingItemId.length === 0 && !loading ? (
+          <div style={styles.empty}>None detected.</div>
+        ) : (
+          <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>ts</th>
+                  <th style={styles.thRight}>qtyDelta</th>
+                  <th style={styles.th}>eventType</th>
+                  <th style={styles.th}>id</th>
+                </tr>
+              </thead>
+              <tbody>
+                {eventsMissingItemId.map((e, idx) => {
+                  const ts = typeof e?.ts === "string" ? e.ts : "—";
+                  const q = e?.qtyDelta;
+                  const eventType = typeof e?.eventType === "string" ? e.eventType : "—";
+                  const id = typeof e?.id === "string" ? e.id : "—";
+                  const key = (typeof e?.id === "string" && e.id) || `${ts}:${idx}`;
+
+                  return (
+                    <tr key={key}>
+                      <td style={styles.td}>
+                        <span style={styles.mono}>{ts}</span>
+                      </td>
+                      <td style={styles.tdRight}>
+                        <span style={styles.mono}>{isFiniteNumber(q) ? q : "—"}</span>
+                      </td>
+                      <td style={styles.td}>{eventType}</td>
+                      <td style={styles.td}>
+                        <span style={styles.monoSmall}>{id}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
-      {analysis.negativeOnHand.length > 0 && (
-        <section style={styles.card}>
-          <h3 style={styles.h3}>Negative On-Hand Items</h3>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}>Item ID</th>
-                <th style={styles.thRight}>Derived Quantity</th>
-              </tr>
-            </thead>
-            <tbody>
-              {analysis.negativeOnHand.map((r) => (
-                <tr key={r.itemId}>
-                  <td style={styles.td}>{r.itemId}</td>
-                  <td style={{ ...styles.tdRight, color: "#ff7b7b" }}>
-                    {r.qty}
-                  </td>
+      <section style={styles.card}>
+        <div style={styles.sectionTitle}>2) Events Missing qtyDelta (by itemId)</div>
+        <div style={styles.sectionSub}>These events are attributable to an itemId but cannot contribute to derived quantities.</div>
+
+        {filteredMissingQtyDelta.length === 0 && !loading ? (
+          <div style={styles.empty}>None detected.</div>
+        ) : (
+          <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>itemId</th>
+                  <th style={styles.th}>ts</th>
+                  <th style={styles.th}>eventType</th>
+                  <th style={styles.th}>Links</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      )}
+              </thead>
+              <tbody>
+                {filteredMissingQtyDelta.map((e, idx) => {
+                  const itemId = typeof e?.itemId === "string" ? e.itemId : "";
+                  const ts = typeof e?.ts === "string" ? e.ts : "—";
+                  const eventType = typeof e?.eventType === "string" ? e.eventType : "—";
+                  const key = (typeof e?.id === "string" && e.id) || `${itemId}:${ts}:${idx}`;
+
+                  return (
+                    <tr key={key}>
+                      <td style={styles.td}>
+                        <span style={styles.mono}>{itemId || "—"}</span>
+                      </td>
+                      <td style={styles.td}>
+                        <span style={styles.mono}>{ts}</span>
+                      </td>
+                      <td style={styles.td}>{eventType}</td>
+                      <td style={styles.td}>
+                        {itemId ? (
+                          <div style={styles.linkRow}>
+                            <Link style={styles.link} href={itemHref(itemId)}>
+                              Drill-down
+                            </Link>
+                            <Link style={styles.linkSecondary} href={movementsHref(itemId)}>
+                              Movements
+                            </Link>
+                          </div>
+                        ) : (
+                          <span style={styles.muted}>—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section style={styles.card}>
+        <div style={styles.sectionTitle}>3) Events With Negative qtyDelta (by itemId)</div>
+        <div style={styles.sectionSub}>These events reduce derived on-hand totals (no clamping).</div>
+
+        {filteredNegativeQtyDelta.length === 0 && !loading ? (
+          <div style={styles.empty}>None detected.</div>
+        ) : (
+          <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>itemId</th>
+                  <th style={styles.th}>ts</th>
+                  <th style={styles.thRight}>qtyDelta</th>
+                  <th style={styles.th}>eventType</th>
+                  <th style={styles.th}>Links</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredNegativeQtyDelta.map((e, idx) => {
+                  const itemId = typeof e?.itemId === "string" ? e.itemId : "";
+                  const ts = typeof e?.ts === "string" ? e.ts : "—";
+                  const q = e?.qtyDelta;
+                  const eventType = typeof e?.eventType === "string" ? e.eventType : "—";
+                  const key = (typeof e?.id === "string" && e.id) || `${itemId}:${ts}:${idx}`;
+
+                  return (
+                    <tr key={key}>
+                      <td style={styles.td}>
+                        <span style={styles.mono}>{itemId || "—"}</span>
+                      </td>
+                      <td style={styles.td}>
+                        <span style={styles.mono}>{ts}</span>
+                      </td>
+                      <td style={{ ...styles.tdRight, ...styles.neg }}>
+                        <span style={styles.mono}>{isFiniteNumber(q) ? q : "—"}</span>
+                      </td>
+                      <td style={styles.td}>{eventType}</td>
+                      <td style={styles.td}>
+                        {itemId ? (
+                          <div style={styles.linkRow}>
+                            <Link style={styles.link} href={itemHref(itemId)}>
+                              Drill-down
+                            </Link>
+                            <Link style={styles.linkSecondary} href={movementsHref(itemId)}>
+                              Movements
+                            </Link>
+                          </div>
+                        ) : (
+                          <span style={styles.muted}>—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section style={styles.card}>
+        <div style={styles.sectionTitle}>4) Items With Negative Derived Totals</div>
+        <div style={styles.sectionSub}>Items whose ledger-derived on-hand total is below zero.</div>
+
+        {filteredNegativeTotals.length === 0 && !loading ? (
+          <div style={styles.empty}>None detected.</div>
+        ) : (
+          <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>itemId</th>
+                  <th style={styles.thRight}>derivedQuantity</th>
+                  <th style={styles.th}>Links</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredNegativeTotals.map((r) => (
+                  <tr key={r.itemId}>
+                    <td style={styles.td}>
+                      <span style={styles.mono}>{r.itemId}</span>
+                    </td>
+                    <td style={{ ...styles.tdRight, ...styles.neg }}>
+                      <span style={styles.mono}>{r.derivedQuantity}</span>
+                    </td>
+                    <td style={styles.td}>
+                      <div style={styles.linkRow}>
+                        <Link style={styles.link} href={itemHref(r.itemId)}>
+                          Drill-down
+                        </Link>
+                        <Link style={styles.linkSecondary} href={movementsHref(r.itemId)}>
+                          Movements
+                        </Link>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section style={styles.card}>
+        <div style={styles.noteTitle}>Notes</div>
+        <ul style={styles.ul}>
+          <li>Query parameter support: /inventory/anomalies?itemId=… focuses all item-scoped anomaly tables to one item.</li>
+          <li>Missing itemId events are excluded from item-level derivations by definition.</li>
+          <li>Missing qtyDelta events do not contribute to derived totals.</li>
+        </ul>
+      </section>
     </main>
   );
 }
 
 const styles = {
-  shell: {
-    minHeight: "100vh",
-    background: "#0b0f14",
-    color: "#e6edf3",
-    padding: 24
-  },
+  shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
   header: { marginBottom: 16 },
   title: { fontSize: 22, fontWeight: 700 },
-  sub: { fontSize: 13, opacity: 0.75 },
-  h3: { margin: "0 0 8px 0", fontSize: 15 },
-  ul: { margin: 0, paddingLeft: 18, opacity: 0.9 },
+  sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
   card: {
-    border: "1px solid rgba(255,255,255,0.10)",
+    border: "1px solid #e5e5e5",
     borderRadius: 12,
     padding: 16,
-    marginBottom: 14,
-    background: "rgba(255,255,255,0.02)"
+    marginBottom: 16,
+    background: "#fff",
   },
-  cardError: {
-    border: "1px solid rgba(255,0,0,0.4)",
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 14,
-    background: "rgba(255,0,0,0.05)"
+  controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
+  label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
+  input: {
+    width: 320,
+    padding: "8px 10px",
+    borderRadius: 10,
+    border: "1px solid #ccc",
+    outline: "none",
+    fontSize: 13,
   },
   button: {
     padding: "8px 12px",
-    borderRadius: 8,
-    border: "1px solid rgba(255,255,255,0.2)",
-    background: "rgba(255,255,255,0.05)",
-    color: "#e6edf3",
-    cursor: "pointer"
+    borderRadius: 10,
+    border: "1px solid #111",
+    background: "#111",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: 13,
+    height: 34,
   },
-  table: { width: "100%", borderCollapse: "collapse" },
-  th: {
-    textAlign: "left",
-    paddingBottom: 8,
-    borderBottom: "1px solid rgba(255,255,255,0.12)"
-  },
-  thRight: {
-    textAlign: "right",
-    paddingBottom: 8,
-    borderBottom: "1px solid rgba(255,255,255,0.12)"
-  },
-  td: {
-    padding: "8px 0",
-    borderBottom: "1px solid rgba(255,255,255,0.06)"
-  },
+  quickLinks: { fontSize: 13, paddingBottom: 2, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  dot: { color: "#999" },
+  meta: { fontSize: 13, color: "#444", paddingBottom: 2 },
+  err: { marginTop: 10, color: "#b00020", fontSize: 13 },
+  empty: { marginTop: 10, color: "#666", fontSize: 13 },
+  tableWrap: { width: "100%", overflowX: "auto", marginTop: 12 },
+  table: { borderCollapse: "collapse", width: "100%" },
+  th: { textAlign: "left", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
+  thRight: { textAlign: "right", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
+  td: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, verticalAlign: "top" },
   tdRight: {
-    padding: "8px 0",
+    padding: "10px 8px",
+    borderBottom: "1px solid #f0f0f0",
+    fontSize: 13,
     textAlign: "right",
-    borderBottom: "1px solid rgba(255,255,255,0.06)"
-  }
+    verticalAlign: "top",
+  },
+  sectionTitle: { fontSize: 14, fontWeight: 700 },
+  sectionSub: { marginTop: 6, color: "#666", fontSize: 13, lineHeight: 1.35 },
+  linkRow: { display: "flex", gap: 10, flexWrap: "wrap" },
+  link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
+  linkSecondary: { color: "#444", textDecoration: "none", fontSize: 13 },
+  muted: { color: "#777" },
+  mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+  monoSmall: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12 },
+  neg: { color: "#b00020", fontWeight: 700 },
+  noteTitle: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
+  ul: { margin: 0, paddingLeft: 18, color: "#333", fontSize: 13, lineHeight: 1.5 },
 };
