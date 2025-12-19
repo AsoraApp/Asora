@@ -1,48 +1,82 @@
+// web/app/_ui/LedgerFreshnessBar.jsx
 "use client";
 
-export default function LedgerFreshnessBar({ lastFetchedUtc, cacheStatus, onRefresh, onClearCache }) {
+export default function LedgerFreshnessBar({
+  lastFetchedUtc = "",
+  cacheStatus = "unknown", // "cached" | "fresh" | "unknown"
+  onRefreshCached,
+  onRefreshForce,
+  onClearCache,
+  busy = false,
+}) {
   return (
-    <div style={styles.bar}>
+    <div style={styles.row}>
       <div style={styles.left}>
-        <b>Data freshness:</b>{" "}
-        <span style={styles.mono}>{lastFetchedUtc ? `${lastFetchedUtc} UTC` : "not loaded"}</span>
-        {" · "}
-        <span style={styles.badge}>{cacheStatus || "—"}</span>
+        <div style={styles.label}>Data freshness</div>
+        <div style={styles.meta}>
+          <span style={styles.k}>Last fetched (UTC):</span>{" "}
+          <span style={styles.mono}>{lastFetchedUtc || "—"}</span>
+          <span style={styles.sep}>·</span>
+          <span style={styles.k}>Cache:</span>{" "}
+          <span style={styles.badge}>{cacheStatus}</span>
+        </div>
       </div>
 
       <div style={styles.actions}>
-        {onRefresh ? (
-          <button style={styles.btn} onClick={onRefresh}>
-            Refresh
-          </button>
-        ) : null}
-        {onClearCache ? (
-          <button style={styles.btnSecondary} onClick={onClearCache}>
-            Clear cache
-          </button>
-        ) : null}
+        <button style={styles.btn} onClick={onRefreshCached} disabled={busy || !onRefreshCached}>
+          Refresh (cached)
+        </button>
+        <button style={styles.btn} onClick={onRefreshForce} disabled={busy || !onRefreshForce}>
+          Refresh (force)
+        </button>
+        <button style={styles.btnMuted} onClick={onClearCache} disabled={busy || !onClearCache}>
+          Clear cache
+        </button>
       </div>
     </div>
   );
 }
 
 const styles = {
-  bar: {
+  row: {
     display: "flex",
     justifyContent: "space-between",
-    gap: 10,
-    alignItems: "center",
-    padding: "8px 10px",
-    borderRadius: 12,
-    border: "1px solid rgba(0,0,0,0.10)",
-    background: "rgba(0,0,0,0.03)",
-    fontSize: 12,
+    gap: 12,
     flexWrap: "wrap",
+    alignItems: "center",
   },
-  left: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" },
-  actions: { display: "flex", gap: 8 },
-  btn: { padding: "6px 10px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.18)", background: "#111", color: "#fff", cursor: "pointer", fontSize: 12 },
-  btnSecondary: { padding: "6px 10px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.18)", background: "#fff", color: "#111", cursor: "pointer", fontSize: 12 },
+  left: { display: "flex", flexDirection: "column", gap: 6 },
+  label: { fontSize: 12, fontWeight: 800, opacity: 0.9 },
+  meta: { fontSize: 12, opacity: 0.9, lineHeight: 1.35 },
+  k: { opacity: 0.75 },
+  sep: { margin: "0 8px", opacity: 0.5 },
   mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
-  badge: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", opacity: 0.85 },
+  badge: {
+    display: "inline-block",
+    padding: "2px 8px",
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(0,0,0,0.18)",
+    fontSize: 12,
+  },
+  actions: { display: "flex", gap: 8, flexWrap: "wrap" },
+  btn: {
+    padding: "8px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(255,255,255,0.06)",
+    color: "#e6edf3",
+    cursor: "pointer",
+    fontSize: 12,
+  },
+  btnMuted: {
+    padding: "8px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.03)",
+    color: "#e6edf3",
+    cursor: "pointer",
+    fontSize: 12,
+    opacity: 0.9,
+  },
 };
