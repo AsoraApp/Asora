@@ -5,8 +5,11 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
+import { usePersistedString } from "../_ui/useViewState.jsx";
 
 export const runtime = "edge";
+
+const STORE_KEY = "asora_view:items:itemId";
 
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
@@ -61,11 +64,22 @@ export default function InventoryItemsPage() {
   const { isCompact } = useDensity();
 
   const sp = useSearchParams();
-  const initialFocus = sp?.get("itemId") || "";
+  const qpItemId = sp?.get("itemId") || "";
+
+  const [persistedFocus, setPersistedFocus] = usePersistedString(STORE_KEY, "");
+  const [focusItemId, setFocusItemId] = useState(qpItemId || persistedFocus);
+
+  // If URL itemId changes, adopt it and persist it.
+  useEffect(() => {
+    if (qpItemId && qpItemId !== focusItemId) {
+      setFocusItemId(qpItemId);
+      setPersistedFocus(qpItemId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qpItemId]);
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [focusItemId, setFocusItemId] = useState(initialFocus);
   const [rows, setRows] = useState([]);
 
   async function load() {
@@ -112,10 +126,7 @@ export default function InventoryItemsPage() {
 
       <header style={s.header}>
         <div style={s.title}>Inventory Items</div>
-        <div style={s.sub}>
-          Read-only inventory item list (best-effort shape). Deterministic ordering by itemId. Cross-links provide
-          coherence across derived views.
-        </div>
+        <div style={s.sub}>Read-only inventory item list (best-effort shape). Focus is saved locally.</div>
       </header>
 
       <section style={s.card}>
@@ -125,7 +136,11 @@ export default function InventoryItemsPage() {
             <input
               style={s.input}
               value={focusItemId}
-              onChange={(e) => setFocusItemId(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setFocusItemId(v);
+                setPersistedFocus(v);
+              }}
               placeholder="e.g. ITEM-123"
             />
           </label>
@@ -201,9 +216,8 @@ export default function InventoryItemsPage() {
       <section style={s.card}>
         <div style={s.noteTitle}>Notes</div>
         <ul style={s.ul}>
-          <li>Query parameter support: /inventory/items?itemId=… focuses to a single itemId (client-side filter).</li>
+          <li>URL itemId overrides saved focus and will be persisted.</li>
           <li>Quantity is treated as optional because inventory read payload shapes may vary.</li>
-          <li>Cross-links do not imply authority; they are navigation only.</li>
         </ul>
       </section>
     </main>
