@@ -20,6 +20,9 @@ export default function HomePage() {
           <Link style={styles.linkSecondary} href="/audit">
             Audit Log (placeholder)
           </Link>
+          <Link style={styles.link} href="/inventory/snapshot">
+            Inventory Snapshot
+          </Link>
         </div>
       </section>
 
