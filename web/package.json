@@ -13,4 +13,12 @@
     "react": "19.0.0",
     "react-dom": "19.0.0"
   }
+  
+}
+"scripts": {
+  "dev": "next dev",
+  "build": "next build",
+  "pages:build": "next build && npx @cloudflare/next-on-pages@1",
+  "start": "next start",
+  "lint": "next lint"
 }
