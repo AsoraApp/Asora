@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
+import { usePersistedString } from "../_ui/useViewState.jsx";
 import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
 import SavedViewsBar from "@/app/ui/SavedViewsBar";
 
@@ -22,22 +23,6 @@ function movementsHref(itemId) {
   return `/inventory/movements?itemId=${encodeURIComponent(String(itemId))}`;
 }
 
-function safeReadLocalStorage(key) {
-  try {
-    return localStorage.getItem(key) || "";
-  } catch {
-    return "";
-  }
-}
-function safeWriteLocalStorage(key, value) {
-  try {
-    if (!value) localStorage.removeItem(key);
-    else localStorage.setItem(key, value);
-  } catch {
-    // ignore
-  }
-}
-
 export default function InventoryAnomaliesPage() {
   const { isCompact } = useDensity();
   const s = isCompact ? compact : styles;
@@ -46,20 +31,14 @@ export default function InventoryAnomaliesPage() {
   const [err, setErr] = useState("");
   const [events, setEvents] = useState([]);
 
-  // Focus itemId (local-only)
-  const [focusItemId, setFocusItemId] = useState("");
+  // Focus itemId (local-only, persisted)
+  const [focusItemId, setFocusItemId] = usePersistedString(FOCUS_STORE_KEY, "");
 
   // Paging controls per table (deterministic)
   const [pageMissingItemId, setPageMissingItemId] = useState(1);
   const [pageMissingQtyDelta, setPageMissingQtyDelta] = useState(1);
   const [pageNegativeDelta, setPageNegativeDelta] = useState(1);
   const [pageNegativeTotals, setPageNegativeTotals] = useState(1);
-
-  useEffect(() => {
-    // hydrate focus from localStorage once
-    const v = safeReadLocalStorage(FOCUS_STORE_KEY);
-    if (v) setFocusItemId(v);
-  }, []);
 
   async function load({ force = false } = {}) {
     setLoading(true);
@@ -177,7 +156,8 @@ export default function InventoryAnomaliesPage() {
         </button>
         <div style={s.pagerText}>
           Page <span style={s.mono}>{page}</span> / <span style={s.mono}>{pc}</span> (showing{" "}
-          <span style={s.mono}>{Math.min(list.length, page * PAGE_SIZE)}</span> of <span style={s.mono}>{list.length}</span>)
+          <span style={s.mono}>{Math.min(list.length, page * PAGE_SIZE)}</span> of{" "}
+          <span style={s.mono}>{list.length}</span>)
         </div>
         <button style={s.pagerBtn} onClick={() => setPage((p) => Math.min(pc, p + 1))} disabled={page >= pc}>
           Next
@@ -192,7 +172,6 @@ export default function InventoryAnomaliesPage() {
   function applySaved(value) {
     const v = (value || "").trim();
     setFocusItemId(v);
-    safeWriteLocalStorage(FOCUS_STORE_KEY, v);
   }
 
   return (
@@ -221,11 +200,7 @@ export default function InventoryAnomaliesPage() {
             <input
               style={s.input}
               value={focusItemId}
-              onChange={(e) => {
-                const v = e.target.value;
-                setFocusItemId(v);
-                safeWriteLocalStorage(FOCUS_STORE_KEY, v);
-              }}
+              onChange={(e) => setFocusItemId(e.target.value)}
               placeholder="exact itemId (filters item-specific sections)"
             />
           </label>
@@ -242,12 +217,7 @@ export default function InventoryAnomaliesPage() {
         </div>
 
         <div style={{ marginTop: 12 }}>
-          <SavedViewsBar
-            storageKey={SAVED_VIEWS_KEY}
-            valueLabel="focus itemId"
-            currentValue={focus}
-            onApply={applySaved}
-          />
+          <SavedViewsBar storageKey={SAVED_VIEWS_KEY} valueLabel="focus itemId" currentValue={focus} onApply={applySaved} />
         </div>
 
         {err ? <div style={s.err}>Error: {err}</div> : null}
