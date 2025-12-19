@@ -271,4 +271,87 @@ const styles = {
   card: { border: "1px solid #e5e5e5", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fff" },
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
   label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
-  input: { width: 280, padding: "8px 10px", borderRadius: 10, border
+  input: { width: 280, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
+
+  button: {
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #111",
+    background: "#111",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: 13,
+    height: 34,
+  },
+  buttonSecondary: {
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #bbb",
+    background: "#fff",
+    color: "#111",
+    cursor: "pointer",
+    fontSize: 13,
+    height: 34,
+  },
+
+  quickLinks: { fontSize: 13, paddingBottom: 2 },
+  link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
+
+  meta: { fontSize: 13, color: "#444", paddingBottom: 2 },
+
+  pagerRow: { marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
+  pagerBtn: { padding: "6px 10px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", cursor: "pointer", fontSize: 13 },
+  pagerBtnSecondary: { padding: "6px 10px", borderRadius: 10, border: "1px solid #bbb", background: "#f7f7f7", cursor: "pointer", fontSize: 13 },
+  pagerText: { fontSize: 13, color: "#333" },
+
+  err: { marginTop: 10, color: "#b00020", fontSize: 13 },
+  empty: { marginTop: 12, color: "#666", fontSize: 13 },
+
+  tableWrap: { width: "100%", overflowX: "auto", marginTop: 12 },
+  table: { borderCollapse: "collapse", width: "100%" },
+  th: { textAlign: "left", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
+  thRight: { textAlign: "right", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
+  td: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, verticalAlign: "top" },
+  tdRight: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, textAlign: "right", verticalAlign: "top" },
+
+  neg: { color: "#b00020", fontWeight: 700 },
+  muted: { color: "#777" },
+  mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+
+  noteTitle: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
+  ul: { margin: 0, paddingLeft: 18, color: "#333", fontSize: 13, lineHeight: 1.5 },
+};
+
+const compact = {
+  ...styles,
+  shell: { ...styles.shell, padding: 14 },
+  header: { marginBottom: 10 },
+  title: { fontSize: 18, fontWeight: 750 },
+  sub: { ...styles.sub, fontSize: 12 },
+
+  card: { ...styles.card, padding: 12, marginBottom: 12 },
+  label: { ...styles.label, fontSize: 12 },
+  input: { ...styles.input, padding: "6px 8px", fontSize: 12 },
+
+  button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
+  buttonSecondary: { ...styles.buttonSecondary, padding: "6px 10px", fontSize: 12, height: 30 },
+
+  meta: { ...styles.meta, fontSize: 12 },
+
+  pagerBtn: { ...styles.pagerBtn, fontSize: 12 },
+  pagerBtnSecondary: { ...styles.pagerBtnSecondary, fontSize: 12 },
+  pagerText: { ...styles.pagerText, fontSize: 12 },
+
+  err: { ...styles.err, fontSize: 12 },
+  empty: { ...styles.empty, fontSize: 12 },
+
+  th: { ...styles.th, padding: "8px 6px", fontSize: 11 },
+  thRight: { ...styles.thRight, padding: "8px 6px", fontSize: 11 },
+  td: { ...styles.td, padding: "8px 6px", fontSize: 12 },
+  tdRight: { ...styles.tdRight, padding: "8px 6px", fontSize: 12 },
+
+  link: { ...styles.link, fontSize: 12 },
+
+  noteTitle: { ...styles.noteTitle, fontSize: 13 },
+  ul: { ...styles.ul, fontSize: 12 },
+};
