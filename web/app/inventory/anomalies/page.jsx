@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
+import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 
 export const runtime = "edge";
 
@@ -20,6 +21,8 @@ function isFiniteNumber(n) {
 }
 
 export default function InventoryAnomaliesPage() {
+  const { isCompact } = useDensity();
+
   const sp = useSearchParams();
   const initialFocus = sp?.get("itemId") || "";
 
@@ -135,84 +138,73 @@ export default function InventoryAnomaliesPage() {
     };
   }, [eventsMissingItemId.length, filteredMissingQtyDelta.length, filteredNegativeQtyDelta.length, filteredNegativeTotals.length]);
 
-  return (
-    <main style={styles.shell}>
-      <header style={styles.topbar}>
-        <div style={styles.brandRow}>
-          <div style={styles.brand}>Asora</div>
-          <div style={styles.nav}>
-            <Link href="/" style={styles.navLink}>
-              Home
-            </Link>
-            <span style={styles.navSep}>/</span>
-            <Link href="/inventory/items" style={styles.navLink}>
-              Inventory Items
-            </Link>
-          </div>
-        </div>
-      </header>
+  const s = isCompact ? compact : styles;
 
-      <header style={styles.header}>
-        <div style={styles.title}>Inventory Anomalies</div>
-        <div style={styles.sub}>
+  return (
+    <main style={s.shell}>
+      <CompactBar here="Anomalies" />
+
+      <header style={s.header}>
+        <div style={s.title}>Inventory Anomalies</div>
+        <div style={s.sub}>
           Integrity signals derived from ledger events (diagnostic only; no correction or mutation). Deterministic sorting.
         </div>
       </header>
 
-      <section style={styles.card}>
-        <div style={styles.controls}>
-          <label style={styles.label}>
+      <section style={s.card}>
+        <div style={s.controls}>
+          <label style={s.label}>
             Focus itemId (optional)
             <input
-              style={styles.input}
+              style={s.input}
               value={focusItemId}
               onChange={(e) => setFocusItemId(e.target.value)}
               placeholder="e.g. ITEM-123"
             />
           </label>
 
-          <button style={styles.button} onClick={load} disabled={loading}>
+          <button style={s.button} onClick={load} disabled={loading}>
             {loading ? "Refreshing..." : "Refresh"}
           </button>
 
           {focus ? (
-            <div style={styles.quickLinks}>
-              <Link style={styles.link} href={itemHref(focus)}>
+            <div style={s.quickLinks}>
+              <Link style={s.link} href={itemHref(focus)}>
                 Drill-down for {focus}
               </Link>
-              <span style={styles.dot}>·</span>
-              <Link style={styles.linkSecondary} href={movementsHref(focus)}>
+              <span style={s.dot}>·</span>
+              <Link style={s.linkSecondary} href={movementsHref(focus)}>
                 Movements for {focus}
               </Link>
             </div>
           ) : null}
 
-          <div style={styles.meta}>
-            Missing itemId: <span style={styles.mono}>{totals.missingItemId}</span> | Missing qtyDelta:{" "}
-            <span style={styles.mono}>{totals.missingQtyDelta}</span> | Negative qtyDelta:{" "}
-            <span style={styles.mono}>{totals.negativeQtyDelta}</span> | Negative totals:{" "}
-            <span style={styles.mono}>{totals.negativeTotals}</span>
+          <div style={s.meta}>
+            Missing itemId: <span style={s.mono}>{totals.missingItemId}</span> | Missing qtyDelta:{" "}
+            <span style={s.mono}>{totals.missingQtyDelta}</span> | Negative qtyDelta:{" "}
+            <span style={s.mono}>{totals.negativeQtyDelta}</span> | Negative totals:{" "}
+            <span style={s.mono}>{totals.negativeTotals}</span>
           </div>
         </div>
 
-        {err ? <div style={styles.err}>Error: {err}</div> : null}
+        {err ? <div style={s.err}>Error: {err}</div> : null}
       </section>
 
-      <section style={styles.card}>
-        <div style={styles.sectionTitle}>1) Events Missing itemId</div>
-        <div style={styles.sectionSub}>These events cannot be attributed to an item; they are excluded from all per-item derivations.</div>
+      <section style={s.card}>
+        <div style={s.sectionTitle}>1) Events Missing itemId</div>
+        <div style={s.sectionSub}>These events cannot be attributed to an item; they are excluded from all per-item derivations.</div>
 
         {eventsMissingItemId.length === 0 && !loading ? (
-          <div style={styles.empty}>None detected.</div>
+          <div style={s.empty}>None detected.</div>
         ) : (
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
+          <div style={s.tableWrap}>
+            <table style={s.table}>
               <thead>
                 <tr>
-                  <th style={styles.th}>ts</th>
-                  <th style={styles.thRight}>qtyDelta</th>
-                  <th style={styles.th}>eventType</th>
-                  <th style={styles.th}>id</th>
+                  <th style={s.th}>ts</th>
+                  <th style={s.thRight}>qtyDelta</th>
+                  <th style={s.th}>eventType</th>
+                  <th style={s.th}>id</th>
                 </tr>
               </thead>
               <tbody>
@@ -225,15 +217,15 @@ export default function InventoryAnomaliesPage() {
 
                   return (
                     <tr key={key}>
-                      <td style={styles.td}>
-                        <span style={styles.mono}>{ts}</span>
+                      <td style={s.td}>
+                        <span style={s.mono}>{ts}</span>
                       </td>
-                      <td style={styles.tdRight}>
-                        <span style={styles.mono}>{isFiniteNumber(q) ? q : "—"}</span>
+                      <td style={s.tdRight}>
+                        <span style={s.mono}>{isFiniteNumber(q) ? q : "—"}</span>
                       </td>
-                      <td style={styles.td}>{eventType}</td>
-                      <td style={styles.td}>
-                        <span style={styles.monoSmall}>{id}</span>
+                      <td style={s.td}>{eventType}</td>
+                      <td style={s.td}>
+                        <span style={s.monoSmall}>{id}</span>
                       </td>
                     </tr>
                   );
@@ -244,21 +236,21 @@ export default function InventoryAnomaliesPage() {
         )}
       </section>
 
-      <section style={styles.card}>
-        <div style={styles.sectionTitle}>2) Events Missing qtyDelta (by itemId)</div>
-        <div style={styles.sectionSub}>These events are attributable to an itemId but cannot contribute to derived quantities.</div>
+      <section style={s.card}>
+        <div style={s.sectionTitle}>2) Events Missing qtyDelta (by itemId)</div>
+        <div style={s.sectionSub}>These events are attributable to an itemId but cannot contribute to derived quantities.</div>
 
         {filteredMissingQtyDelta.length === 0 && !loading ? (
-          <div style={styles.empty}>None detected.</div>
+          <div style={s.empty}>None detected.</div>
         ) : (
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
+          <div style={s.tableWrap}>
+            <table style={s.table}>
               <thead>
                 <tr>
-                  <th style={styles.th}>itemId</th>
-                  <th style={styles.th}>ts</th>
-                  <th style={styles.th}>eventType</th>
-                  <th style={styles.th}>Links</th>
+                  <th style={s.th}>itemId</th>
+                  <th style={s.th}>ts</th>
+                  <th style={s.th}>eventType</th>
+                  <th style={s.th}>Links</th>
                 </tr>
               </thead>
               <tbody>
@@ -270,25 +262,25 @@ export default function InventoryAnomaliesPage() {
 
                   return (
                     <tr key={key}>
-                      <td style={styles.td}>
-                        <span style={styles.mono}>{itemId || "—"}</span>
+                      <td style={s.td}>
+                        <span style={s.mono}>{itemId || "—"}</span>
                       </td>
-                      <td style={styles.td}>
-                        <span style={styles.mono}>{ts}</span>
+                      <td style={s.td}>
+                        <span style={s.mono}>{ts}</span>
                       </td>
-                      <td style={styles.td}>{eventType}</td>
-                      <td style={styles.td}>
+                      <td style={s.td}>{eventType}</td>
+                      <td style={s.td}>
                         {itemId ? (
-                          <div style={styles.linkRow}>
-                            <Link style={styles.link} href={itemHref(itemId)}>
+                          <div style={s.linkRow}>
+                            <Link style={s.link} href={itemHref(itemId)}>
                               Drill-down
                             </Link>
-                            <Link style={styles.linkSecondary} href={movementsHref(itemId)}>
+                            <Link style={s.linkSecondary} href={movementsHref(itemId)}>
                               Movements
                             </Link>
                           </div>
                         ) : (
-                          <span style={styles.muted}>—</span>
+                          <span style={s.muted}>—</span>
                         )}
                       </td>
                     </tr>
@@ -300,22 +292,22 @@ export default function InventoryAnomaliesPage() {
         )}
       </section>
 
-      <section style={styles.card}>
-        <div style={styles.sectionTitle}>3) Events With Negative qtyDelta (by itemId)</div>
-        <div style={styles.sectionSub}>These events reduce derived on-hand totals (no clamping).</div>
+      <section style={s.card}>
+        <div style={s.sectionTitle}>3) Events With Negative qtyDelta (by itemId)</div>
+        <div style={s.sectionSub}>These events reduce derived on-hand totals (no clamping).</div>
 
         {filteredNegativeQtyDelta.length === 0 && !loading ? (
-          <div style={styles.empty}>None detected.</div>
+          <div style={s.empty}>None detected.</div>
         ) : (
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
+          <div style={s.tableWrap}>
+            <table style={s.table}>
               <thead>
                 <tr>
-                  <th style={styles.th}>itemId</th>
-                  <th style={styles.th}>ts</th>
-                  <th style={styles.thRight}>qtyDelta</th>
-                  <th style={styles.th}>eventType</th>
-                  <th style={styles.th}>Links</th>
+                  <th style={s.th}>itemId</th>
+                  <th style={s.th}>ts</th>
+                  <th style={s.thRight}>qtyDelta</th>
+                  <th style={s.th}>eventType</th>
+                  <th style={s.th}>Links</th>
                 </tr>
               </thead>
               <tbody>
@@ -328,28 +320,28 @@ export default function InventoryAnomaliesPage() {
 
                   return (
                     <tr key={key}>
-                      <td style={styles.td}>
-                        <span style={styles.mono}>{itemId || "—"}</span>
+                      <td style={s.td}>
+                        <span style={s.mono}>{itemId || "—"}</span>
                       </td>
-                      <td style={styles.td}>
-                        <span style={styles.mono}>{ts}</span>
+                      <td style={s.td}>
+                        <span style={s.mono}>{ts}</span>
                       </td>
-                      <td style={{ ...styles.tdRight, ...styles.neg }}>
-                        <span style={styles.mono}>{isFiniteNumber(q) ? q : "—"}</span>
+                      <td style={{ ...s.tdRight, ...s.neg }}>
+                        <span style={s.mono}>{isFiniteNumber(q) ? q : "—"}</span>
                       </td>
-                      <td style={styles.td}>{eventType}</td>
-                      <td style={styles.td}>
+                      <td style={s.td}>{eventType}</td>
+                      <td style={s.td}>
                         {itemId ? (
-                          <div style={styles.linkRow}>
-                            <Link style={styles.link} href={itemHref(itemId)}>
+                          <div style={s.linkRow}>
+                            <Link style={s.link} href={itemHref(itemId)}>
                               Drill-down
                             </Link>
-                            <Link style={styles.linkSecondary} href={movementsHref(itemId)}>
+                            <Link style={s.linkSecondary} href={movementsHref(itemId)}>
                               Movements
                             </Link>
                           </div>
                         ) : (
-                          <span style={styles.muted}>—</span>
+                          <span style={s.muted}>—</span>
                         )}
                       </td>
                     </tr>
@@ -361,37 +353,37 @@ export default function InventoryAnomaliesPage() {
         )}
       </section>
 
-      <section style={styles.card}>
-        <div style={styles.sectionTitle}>4) Items With Negative Derived Totals</div>
-        <div style={styles.sectionSub}>Items whose ledger-derived on-hand total is below zero.</div>
+      <section style={s.card}>
+        <div style={s.sectionTitle}>4) Items With Negative Derived Totals</div>
+        <div style={s.sectionSub}>Items whose ledger-derived on-hand total is below zero.</div>
 
         {filteredNegativeTotals.length === 0 && !loading ? (
-          <div style={styles.empty}>None detected.</div>
+          <div style={s.empty}>None detected.</div>
         ) : (
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
+          <div style={s.tableWrap}>
+            <table style={s.table}>
               <thead>
                 <tr>
-                  <th style={styles.th}>itemId</th>
-                  <th style={styles.thRight}>derivedQuantity</th>
-                  <th style={styles.th}>Links</th>
+                  <th style={s.th}>itemId</th>
+                  <th style={s.thRight}>derivedQuantity</th>
+                  <th style={s.th}>Links</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredNegativeTotals.map((r) => (
                   <tr key={r.itemId}>
-                    <td style={styles.td}>
-                      <span style={styles.mono}>{r.itemId}</span>
+                    <td style={s.td}>
+                      <span style={s.mono}>{r.itemId}</span>
                     </td>
-                    <td style={{ ...styles.tdRight, ...styles.neg }}>
-                      <span style={styles.mono}>{r.derivedQuantity}</span>
+                    <td style={{ ...s.tdRight, ...s.neg }}>
+                      <span style={s.mono}>{r.derivedQuantity}</span>
                     </td>
-                    <td style={styles.td}>
-                      <div style={styles.linkRow}>
-                        <Link style={styles.link} href={itemHref(r.itemId)}>
+                    <td style={s.td}>
+                      <div style={s.linkRow}>
+                        <Link style={s.link} href={itemHref(r.itemId)}>
                           Drill-down
                         </Link>
-                        <Link style={styles.linkSecondary} href={movementsHref(r.itemId)}>
+                        <Link style={s.linkSecondary} href={movementsHref(r.itemId)}>
                           Movements
                         </Link>
                       </div>
@@ -404,9 +396,9 @@ export default function InventoryAnomaliesPage() {
         )}
       </section>
 
-      <section style={styles.card}>
-        <div style={styles.noteTitle}>Notes</div>
-        <ul style={styles.ul}>
+      <section style={s.card}>
+        <div style={s.noteTitle}>Notes</div>
+        <ul style={s.ul}>
           <li>Query parameter support: /inventory/anomalies?itemId=… focuses all item-scoped anomaly tables to one item.</li>
           <li>Missing itemId events are excluded from item-level derivations by definition.</li>
           <li>Missing qtyDelta events do not contribute to derived totals.</li>
@@ -418,14 +410,6 @@ export default function InventoryAnomaliesPage() {
 
 const styles = {
   shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
-
-  topbar: { marginBottom: 14 },
-  brandRow: { display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 10 },
-  brand: { fontSize: 16, fontWeight: 800, letterSpacing: 0.2 },
-  nav: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-  navLink: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
-  navSep: { color: "#999", fontSize: 13 },
-
   header: { marginBottom: 16 },
   title: { fontSize: 22, fontWeight: 700 },
   sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
@@ -434,16 +418,8 @@ const styles = {
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
   label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
   input: { width: 320, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
-  button: {
-    padding: "8px 12px",
-    borderRadius: 10,
-    border: "1px solid #111",
-    background: "#111",
-    color: "#fff",
-    cursor: "pointer",
-    fontSize: 13,
-    height: 34,
-  },
+  button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
+
   quickLinks: { fontSize: 13, paddingBottom: 2, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
   dot: { color: "#999" },
   meta: { fontSize: 13, color: "#444", paddingBottom: 2 },
@@ -472,4 +448,37 @@ const styles = {
 
   noteTitle: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
   ul: { margin: 0, paddingLeft: 18, color: "#333", fontSize: 13, lineHeight: 1.5 },
+};
+
+const compact = {
+  ...styles,
+  shell: { ...styles.shell, padding: 14 },
+  header: { marginBottom: 10 },
+  title: { fontSize: 18, fontWeight: 750 },
+  sub: { ...styles.sub, fontSize: 12 },
+
+  card: { ...styles.card, padding: 12, marginBottom: 12 },
+  label: { ...styles.label, fontSize: 12 },
+  input: { ...styles.input, padding: "6px 8px", fontSize: 12 },
+  button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
+
+  quickLinks: { ...styles.quickLinks, fontSize: 12 },
+  meta: { ...styles.meta, fontSize: 12 },
+
+  err: { ...styles.err, fontSize: 12 },
+  empty: { ...styles.empty, fontSize: 12 },
+
+  th: { ...styles.th, padding: "8px 6px", fontSize: 11 },
+  thRight: { ...styles.thRight, padding: "8px 6px", fontSize: 11 },
+  td: { ...styles.td, padding: "8px 6px", fontSize: 12 },
+  tdRight: { ...styles.tdRight, padding: "8px 6px", fontSize: 12 },
+
+  sectionTitle: { ...styles.sectionTitle, fontSize: 13 },
+  sectionSub: { ...styles.sectionSub, fontSize: 12 },
+
+  link: { ...styles.link, fontSize: 12 },
+  linkSecondary: { ...styles.linkSecondary, fontSize: 12 },
+
+  noteTitle: { ...styles.noteTitle, fontSize: 13 },
+  ul: { ...styles.ul, fontSize: 12 },
 };
