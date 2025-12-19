@@ -15,6 +15,29 @@ function movementsHref(itemId) {
   return `/inventory/movements?itemId=${encodeURIComponent(String(itemId))}`;
 }
 
+function csvEscape(v) {
+  const s = String(v ?? "");
+  if (s.includes('"') || s.includes(",") || s.includes("\n") || s.includes("\r")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function downloadCsv(filename, header, rows) {
+  const lines = [];
+  lines.push(header.map(csvEscape).join(","));
+  for (const r of rows) lines.push(r.map(csvEscape).join(","));
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export default function InventoryItemDrillDownPage() {
   const { isCompact } = useDensity();
 
@@ -99,6 +122,29 @@ export default function InventoryItemDrillDownPage() {
   }, [events]);
 
   const iid = (itemId || "").trim();
+
+  function exportItemCsv() {
+    if (!iid) return;
+
+    const now = new Date();
+    const ts = now.toISOString().replace(/[:.]/g, "-");
+    const filename = `asora_item_${iid}_${ts}.csv`;
+
+    // Flat “snapshot + movements” CSV:
+    // Repeat derivedTotal on each row so it stays a valid single table.
+    const header = ["itemId", "derivedTotalQtyDelta", "ts", "qtyDelta", "eventType", "eventId"];
+    const rows = events.map((e) => {
+      const t = typeof e?.ts === "string" ? e.ts : "";
+      const q = typeof e?.qtyDelta === "number" && Number.isFinite(e.qtyDelta) ? e.qtyDelta : "";
+      const et = typeof e?.eventType === "string" ? e.eventType : "";
+      const id = typeof e?.id === "string" ? e.id : "";
+      return [iid, derivedTotal, t, q, et, id];
+    });
+
+    // If there are zero events, still export header-only (useful for operators).
+    downloadCsv(filename, header, rows);
+  }
+
   const s = isCompact ? compact : styles;
 
   return (
@@ -107,7 +153,10 @@ export default function InventoryItemDrillDownPage() {
 
       <header style={s.header}>
         <div style={s.title}>Item Drill-Down</div>
-        <div style={s.sub}>Ledger events affecting a single itemId (read-only). itemId is saved locally.</div>
+        <div style={s.sub}>
+          Ledger events affecting a single itemId (read-only). itemId is saved locally. Export emits a flat CSV:
+          derived total + movements.
+        </div>
       </header>
 
       <section style={s.card}>
@@ -125,6 +174,7 @@ export default function InventoryItemDrillDownPage() {
               placeholder="Enter itemId"
             />
           </label>
+
           <button
             style={s.button}
             onClick={() => {
@@ -134,6 +184,15 @@ export default function InventoryItemDrillDownPage() {
             disabled={loading}
           >
             {loading ? "Loading..." : "Load"}
+          </button>
+
+          <button
+            style={s.buttonSecondary}
+            onClick={exportItemCsv}
+            disabled={!iid}
+            title={!iid ? "Enter an itemId to enable export." : "Export derived total + movements CSV."}
+          >
+            Export CSV
           </button>
 
           {iid ? (
@@ -210,6 +269,7 @@ export default function InventoryItemDrillDownPage() {
         <div style={s.noteTitle}>Notes</div>
         <ul style={s.ul}>
           <li>URL itemId overrides saved value and will be persisted.</li>
+          <li>Export is deterministic: events are already ts-ordered with id tie-breaker when present.</li>
           <li>Derived totals are computed client-side by summing numeric qtyDelta values only.</li>
         </ul>
       </section>
@@ -228,7 +288,10 @@ const styles = {
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
   label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
   input: { width: 320, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
+
   button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
+  buttonSecondary: { padding: "8px 12px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", color: "#111", cursor: "pointer", fontSize: 13, height: 34 },
+
   links: { fontSize: 13, paddingBottom: 2 },
   link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
 
@@ -262,7 +325,9 @@ const compact = {
   card: { ...styles.card, padding: 12, marginBottom: 12 },
   label: { ...styles.label, fontSize: 12 },
   input: { ...styles.input, padding: "6px 8px", fontSize: 12 },
+
   button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
+  buttonSecondary: { ...styles.buttonSecondary, padding: "6px 10px", fontSize: 12, height: 30 },
 
   links: { ...styles.links, fontSize: 12 },
   link: { ...styles.link, fontSize: 12 },
