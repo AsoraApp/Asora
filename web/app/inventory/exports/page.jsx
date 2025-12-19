@@ -1,4 +1,3 @@
-```jsx
 // web/app/inventory/exports/page.jsx
 "use client";
 
@@ -9,8 +8,21 @@ import { getLedgerEventsCached, clearLedgerCache } from "@/lib/ledgerCache";
 
 export const runtime = "edge";
 
+/**
+ * U7 — READ-ONLY INTEGRITY EXPORTS (EVIDENCE MODE)
+ *
+ * Guarantees:
+ * - UI-only
+ * - Read-only
+ * - No new endpoints
+ * - No writes
+ * - Deterministic outputs
+ * - UTC timestamps only
+ * - Evidence-grade CSV rules: stable columns, explicit headers, exact values, blanks for missing
+ */
+
 function utcNowIso() {
-  return new Date().toISOString(); // UTC by definition
+  return new Date().toISOString();
 }
 
 function asString(v) {
@@ -50,9 +62,21 @@ function downloadText(filename, text, mime = "text/csv;charset=utf-8") {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function coerceNumber(x) {
+  if (typeof x === "number") return x;
+  if (typeof x === "string" && x.trim() !== "") {
+    const n = Number(x);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function isFiniteNumber(x) {
+  return typeof x === "number" && Number.isFinite(x);
+}
+
 function normalizeEvents(raw) {
   const events = Array.isArray(raw?.events) ? raw.events : Array.isArray(raw) ? raw : [];
-  // Deterministic ordering: ts ASC, id ASC tie-break (string compare)
   return [...events].sort((a, b) => {
     const ta = asString(a?.ts);
     const tb = asString(b?.ts);
@@ -66,19 +90,6 @@ function normalizeEvents(raw) {
   });
 }
 
-function isFiniteNumber(x) {
-  return typeof x === "number" && Number.isFinite(x);
-}
-
-function coerceNumber(x) {
-  if (typeof x === "number") return x;
-  if (typeof x === "string" && x.trim() !== "") {
-    const n = Number(x);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
-
 function deriveSnapshotFromEvents(events) {
   const totals = new Map(); // itemId -> total qtyDelta
   for (const ev of events) {
@@ -89,21 +100,19 @@ function deriveSnapshotFromEvents(events) {
     const key = String(itemId);
     totals.set(key, (totals.get(key) || 0) + qtyDelta);
   }
-  const rows = Array.from(totals.entries())
+  return Array.from(totals.entries())
     .map(([itemId, derivedQty]) => ({ itemId, derivedQty }))
     .sort((a, b) => (a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0));
-  return rows;
 }
 
 async function fetchAllInventoryItems() {
-  // Backend may or may not paginate; rely on v1 read shape.
   const r = await asoraGetJson("/v1/inventory/items", {});
   const items = Array.isArray(r?.items) ? r.items : Array.isArray(r) ? r : [];
   return items;
 }
 
 function buildReconciliationMismatches(items, snapshotRows) {
-  const inv = new Map(); // itemId -> qty (assumed "qty")
+  const inv = new Map(); // itemId -> qty (assumed qty)
   for (const it of items) {
     const itemId = it?.itemId ?? it?.id;
     if (itemId === null || itemId === undefined || itemId === "") continue;
@@ -111,16 +120,16 @@ function buildReconciliationMismatches(items, snapshotRows) {
     inv.set(String(itemId), qty);
   }
 
-  const led = new Map(); // itemId -> derivedQty
+  const led = new Map(); // itemId -> derived qty
   for (const r of snapshotRows) {
     if (r?.itemId === null || r?.itemId === undefined || r?.itemId === "") continue;
     led.set(String(r.itemId), coerceNumber(r.derivedQty) ?? 0);
   }
 
   const allIds = new Set([...inv.keys(), ...led.keys()]);
-  const rows = [];
-
   const idsSorted = Array.from(allIds).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
+  const rows = [];
   for (const itemId of idsSorted) {
     const hasInv = inv.has(itemId);
     const hasLed = led.has(itemId);
@@ -132,11 +141,7 @@ function buildReconciliationMismatches(items, snapshotRows) {
     if (!hasInv && hasLed) status = "MISSING_INVENTORY";
     else if (hasInv && !hasLed) status = "MISSING_LEDGER";
     else {
-      // both present
-      const iq = inventoryQty;
-      const lq = ledgerQty;
-      // If inventory qty is null/not numeric, treat as mismatch (evidence-grade: no guessing).
-      if (!isFiniteNumber(iq) || !isFiniteNumber(lq) || iq !== lq) status = "MISMATCH";
+      if (!isFiniteNumber(inventoryQty) || !isFiniteNumber(ledgerQty) || inventoryQty !== ledgerQty) status = "MISMATCH";
     }
 
     if (status !== "MATCH") {
@@ -168,23 +173,15 @@ function buildAnomalies(events, snapshotRows) {
       qtyDelta: qtyDelta === null ? "" : qtyDelta,
     };
 
-    if (itemId === null || itemId === undefined || itemId === "") {
-      missingItemId.push(base);
-    }
-
-    if (qtyDelta === null) {
-      missingQtyDelta.push(base);
-    } else if (qtyDelta < 0) {
-      negativeQtyDelta.push(base);
-    }
+    if (itemId === null || itemId === undefined || itemId === "") missingItemId.push(base);
+    if (qtyDelta === null) missingQtyDelta.push(base);
+    else if (qtyDelta < 0) negativeQtyDelta.push(base);
   }
 
   const negativeTotals = [];
   for (const r of snapshotRows) {
     const dq = coerceNumber(r?.derivedQty);
-    if (dq !== null && dq < 0) {
-      negativeTotals.push({ itemId: asString(r?.itemId), derivedQty: dq });
-    }
+    if (dq !== null && dq < 0) negativeTotals.push({ itemId: asString(r?.itemId), derivedQty: dq });
   }
 
   const counts = {
@@ -198,7 +195,6 @@ function buildAnomalies(events, snapshotRows) {
 }
 
 async function fetchBuildStampSafe() {
-  // Best-effort only; evidence exports remain valid without it.
   try {
     const r = await asoraGetJson("/__build", {});
     return asString(r?.build || r?.BUILD || r?.stamp || r?.version || "");
@@ -216,13 +212,7 @@ export default function InventoryExportsPage() {
     const buildStamp = await fetchBuildStampSafe();
 
     const headers = ["exportTsUtc", "tenant", "build"];
-    const rows = [
-      {
-        exportTsUtc,
-        tenant: asString(devToken || ""),
-        build: asString(buildStamp || ""),
-      },
-    ];
+    const rows = [{ exportTsUtc, tenant: asString(devToken || ""), build: asString(buildStamp || "") }];
 
     downloadText(`asora_metadata_${exportTsUtc}.csv`, toCsv(headers, rows));
   }
@@ -262,7 +252,6 @@ export default function InventoryExportsPage() {
 
   async function exportReconciliationMismatchesOnly() {
     const exportTsUtc = utcNowIso();
-
     const [raw, items] = await Promise.all([getLedgerEventsCached(), fetchAllInventoryItems()]);
     const events = normalizeEvents(raw);
     const snapshot = deriveSnapshotFromEvents(events);
@@ -282,15 +271,12 @@ export default function InventoryExportsPage() {
 
   async function exportAnomaliesSummary() {
     const exportTsUtc = utcNowIso();
-
     const raw = await getLedgerEventsCached();
     const events = normalizeEvents(raw);
     const snapshot = deriveSnapshotFromEvents(events);
 
     const a = buildAnomalies(events, snapshot);
 
-    // Single evidence-grade CSV: first section is "COUNTS", second section is "ROWS".
-    // Still deterministic and CSV-based; explicit headers on both sections.
     const countHeaders = ["metric", "count"];
     const countRows = [
       { metric: "missingItemId", count: a.counts.missingItemId },
@@ -302,15 +288,9 @@ export default function InventoryExportsPage() {
     const rowHeaders = ["kind", "id", "ts", "type", "itemId", "qtyDelta", "derivedQty"];
     const rows = [];
 
-    for (const r of a.missingItemId) {
-      rows.push({ kind: "MISSING_ITEM_ID", ...r, derivedQty: "" });
-    }
-    for (const r of a.missingQtyDelta) {
-      rows.push({ kind: "MISSING_QTY_DELTA", ...r, derivedQty: "" });
-    }
-    for (const r of a.negativeQtyDelta) {
-      rows.push({ kind: "NEGATIVE_QTY_DELTA", ...r, derivedQty: "" });
-    }
+    for (const r of a.missingItemId) rows.push({ kind: "MISSING_ITEM_ID", ...r, derivedQty: "" });
+    for (const r of a.missingQtyDelta) rows.push({ kind: "MISSING_QTY_DELTA", ...r, derivedQty: "" });
+    for (const r of a.negativeQtyDelta) rows.push({ kind: "NEGATIVE_QTY_DELTA", ...r, derivedQty: "" });
     for (const r of a.negativeTotals) {
       rows.push({
         kind: "NEGATIVE_DERIVED_TOTAL",
@@ -323,7 +303,6 @@ export default function InventoryExportsPage() {
       });
     }
 
-    // Deterministic ordering: kind ASC, then ts ASC, then id ASC, then itemId ASC.
     rows.sort((x, y) => {
       const kx = asString(x.kind);
       const ky = asString(y.kind);
@@ -351,7 +330,6 @@ export default function InventoryExportsPage() {
     const csvCounts = toCsv(countHeaders, countRows.map((r) => ({ metric: r.metric, count: r.count })));
     const csvRows = toCsv(rowHeaders, rows);
 
-    // Combine as a single downloadable text (still CSV-formatted blocks with explicit headers).
     const combined = `COUNTS\n${csvCounts}\nROWS\n${csvRows}`;
     downloadText(`asora_anomalies_${exportTsUtc}.csv`, combined);
   }
@@ -359,7 +337,6 @@ export default function InventoryExportsPage() {
   async function exportAll() {
     setBusy(true);
     try {
-      // Best-effort sequential downloads; no state persisted, no filters, no Saved Views.
       await exportMetadata();
       await exportLedgerRaw();
       await exportSnapshotDerived();
@@ -370,8 +347,7 @@ export default function InventoryExportsPage() {
     }
   }
 
-  async function forceRefreshLedgerCache() {
-    // Explicit operator action; does not mutate backend or schema; clears client cache only.
+  function forceRefreshLedgerCache() {
     clearLedgerCache();
   }
 
@@ -382,6 +358,7 @@ export default function InventoryExportsPage() {
           <div style={styles.brand}>Asora</div>
           <div style={styles.sub}>U7 — Read-Only Integrity Exports (Evidence Mode)</div>
         </div>
+
         <div style={styles.metaRow}>
           <div style={styles.metaItem}>
             <span style={styles.metaLabel}>Tenant (dev_token)</span>
@@ -397,7 +374,8 @@ export default function InventoryExportsPage() {
       <section style={styles.card}>
         <div style={styles.cardTitle}>Evidence Exports</div>
         <div style={styles.note}>
-          Exports are deterministic, client-generated CSVs. Values are emitted exactly; missing fields are left blank.
+          Deterministic, client-generated CSV exports. Stable column ordering. Explicit headers. Exact values only. Missing fields
+          left blank.
         </div>
 
         <div style={styles.actions}>
@@ -428,9 +406,7 @@ export default function InventoryExportsPage() {
           <button style={styles.mutedBtn} onClick={forceRefreshLedgerCache} disabled={busy}>
             Force Refresh (Clear Ledger Cache)
           </button>
-          <div style={styles.smallNote}>
-            This clears the client-side cache only. It does not write to backend systems.
-          </div>
+          <div style={styles.smallNote}>Clears client-side cache only. No backend writes.</div>
         </div>
       </section>
 
@@ -478,6 +454,7 @@ const styles = {
   brandRow: { display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" },
   brand: { fontSize: "20px", fontWeight: 800, letterSpacing: "0.3px" },
   sub: { fontSize: "13px", opacity: 0.8, marginTop: "6px" },
+
   metaRow: {
     display: "flex",
     gap: "16px",
@@ -553,4 +530,3 @@ const styles = {
     opacity: 0.9,
   },
 };
-```
