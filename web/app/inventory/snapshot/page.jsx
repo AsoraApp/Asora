@@ -1,37 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
 
 export const runtime = "edge";
-
-function nowUtcIso() {
-  return new Date().toISOString();
-}
-
-function toCsv(rows) {
-  const header = ["itemId", "derivedQuantity"];
-  const lines = [header.join(",")];
-  for (const r of rows) {
-    const item = String(r.itemId ?? "");
-    const qty = String(r.derivedQuantity ?? "");
-    lines.push([item, qty].map((v) => `"${v.replaceAll('"', '""')}"`).join(","));
-  }
-  return lines.join("\n");
-}
-
-function downloadText(filename, text, mime = "text/plain;charset=utf-8") {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2500);
-}
 
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
@@ -41,151 +15,192 @@ function movementsHref(itemId) {
   return `/inventory/movements?itemId=${encodeURIComponent(String(itemId))}`;
 }
 
-export default function InventorySnapshotPage() {
+function reconciliationHref(itemId) {
+  return `/inventory/reconciliation?itemId=${encodeURIComponent(String(itemId))}`;
+}
+
+function isFiniteNumber(n) {
+  return typeof n === "number" && Number.isFinite(n) && !Number.isNaN(n);
+}
+
+function normalizeInventoryItemsPayload(r) {
+  // Best-effort detection only. No invented endpoints or assumptions.
+  const candidates = [];
+  if (Array.isArray(r?.items)) candidates.push(...r.items);
+  if (Array.isArray(r?.data?.items)) candidates.push(...r.data.items);
+
+  const out = [];
+  for (const it of candidates) {
+    if (!it || typeof it !== "object") continue;
+
+    const itemId = it.itemId;
+    if (typeof itemId !== "string" || itemId.trim() === "") continue;
+
+    // quantity may be missing depending on backend shape; treat as optional
+    const quantity = it.quantity;
+    const hasQty = isFiniteNumber(quantity);
+
+    // keep a stable, minimal row shape
+    out.push({
+      itemId,
+      quantity: hasQty ? quantity : null,
+      raw: it,
+    });
+  }
+
+  // Deterministic ordering: itemId asc, then stable JSON of raw as tie-breaker (rare).
+  out.sort((a, b) => {
+    const c = a.itemId.localeCompare(b.itemId);
+    if (c !== 0) return c;
+    const ra = JSON.stringify(a.raw || {});
+    const rb = JSON.stringify(b.raw || {});
+    return ra.localeCompare(rb);
+  });
+
+  return out;
+}
+
+export default function InventoryItemsPage() {
+  const sp = useSearchParams();
+  const initialFocus = sp?.get("itemId") || "";
+
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [snapshotUtc, setSnapshotUtc] = useState("");
+  const [focusItemId, setFocusItemId] = useState(initialFocus);
   const [rows, setRows] = useState([]);
-  const [skipped, setSkipped] = useState({ missingItemId: 0, badQtyDelta: 0, nonObject: 0 });
 
-  const derived = useMemo(() => rows, [rows]);
-
-  const compute = useCallback(async () => {
+  async function load() {
     setLoading(true);
     setErr("");
     try {
-      const r = await asoraGetJson("/v1/ledger/events", {});
-      const events = Array.isArray(r?.events) ? r.events : [];
-
-      const totals = new Map();
-      let missingItemId = 0;
-      let badQtyDelta = 0;
-      let nonObject = 0;
-
-      for (const e of events) {
-        if (!e || typeof e !== "object") {
-          nonObject += 1;
-          continue;
-        }
-        const itemId = e.itemId;
-        if (typeof itemId !== "string" || itemId.trim() === "") {
-          missingItemId += 1;
-          continue;
-        }
-        const q = e.qtyDelta;
-        if (typeof q !== "number" || Number.isNaN(q) || !Number.isFinite(q)) {
-          badQtyDelta += 1;
-          continue;
-        }
-        totals.set(itemId, (totals.get(itemId) || 0) + q);
-      }
-
-      const out = Array.from(totals.entries())
-        .map(([itemId, derivedQuantity]) => ({ itemId, derivedQuantity }))
-        .sort((a, b) => a.itemId.localeCompare(b.itemId));
-
-      setRows(out);
-      setSkipped({ missingItemId, badQtyDelta, nonObject });
-      setSnapshotUtc(nowUtcIso());
+      const r = await asoraGetJson("/v1/inventory/items", {});
+      const list = normalizeInventoryItemsPayload(r);
+      setRows(list);
     } catch (e) {
-      setErr(e?.message || "Failed to load ledger events.");
+      setErr(e?.message || "Failed to load inventory items.");
       setRows([]);
-      setSkipped({ missingItemId: 0, badQtyDelta: 0, nonObject: 0 });
-      setSnapshotUtc(nowUtcIso());
     } finally {
       setLoading(false);
     }
-  }, []);
+  }
 
   useEffect(() => {
-    compute();
-  }, [compute]);
+    load();
+  }, []);
 
-  function exportCsv() {
-    const csv = toCsv(derived);
-    const stamp = (snapshotUtc || nowUtcIso()).replaceAll(":", "-");
-    downloadText(`inventory_snapshot_${stamp}.csv`, csv, "text/csv;charset=utf-8");
-  }
+  const focus = (focusItemId || "").trim();
+
+  const filtered = useMemo(() => {
+    if (!focus) return rows;
+    return rows.filter((r) => r.itemId === focus);
+  }, [rows, focus]);
+
+  const qtyStats = useMemo(() => {
+    let withQty = 0;
+    let withoutQty = 0;
+    for (const r of filtered) {
+      if (typeof r.quantity === "number") withQty += 1;
+      else withoutQty += 1;
+    }
+    return { withQty, withoutQty };
+  }, [filtered]);
 
   return (
     <main style={styles.shell}>
       <header style={styles.header}>
-        <div style={styles.title}>Inventory Snapshot</div>
+        <div style={styles.title}>Inventory Items</div>
         <div style={styles.sub}>
-          Derived on-hand state from ledger events (read-only; not stored). Deterministic ordering by itemId.
+          Read-only inventory item list (best-effort shape). Deterministic ordering by itemId. Cross-links provide
+          coherence across derived views.
         </div>
       </header>
 
       <section style={styles.card}>
-        <div style={styles.actionsRow}>
-          <button style={styles.button} onClick={compute} disabled={loading}>
-            {loading ? "Recomputing..." : "Recompute"}
+        <div style={styles.controls}>
+          <label style={styles.label}>
+            Focus itemId (optional)
+            <input
+              style={styles.input}
+              value={focusItemId}
+              onChange={(e) => setFocusItemId(e.target.value)}
+              placeholder="e.g. ITEM-123"
+            />
+          </label>
+
+          <button style={styles.button} onClick={load} disabled={loading}>
+            {loading ? "Refreshing..." : "Refresh"}
           </button>
-          <button style={styles.buttonSecondary} onClick={exportCsv} disabled={loading || derived.length === 0}>
-            Export CSV
-          </button>
+
+          {focus ? (
+            <div style={styles.quickLinks}>
+              <Link style={styles.link} href={itemHref(focus)}>
+                Drill-down for {focus}
+              </Link>
+              <span style={styles.dot}>·</span>
+              <Link style={styles.linkSecondary} href={movementsHref(focus)}>
+                Movements for {focus}
+              </Link>
+              <span style={styles.dot}>·</span>
+              <Link style={styles.linkSecondary} href={reconciliationHref(focus)}>
+                Reconcile {focus}
+              </Link>
+            </div>
+          ) : null}
+
           <div style={styles.meta}>
-            <div>
-              Snapshot UTC: <span style={styles.mono}>{snapshotUtc || "—"}</span>
-            </div>
-            <div style={styles.muted}>
-              Skipped events — missing itemId: <span style={styles.mono}>{skipped.missingItemId}</span>, bad qtyDelta:{" "}
-              <span style={styles.mono}>{skipped.badQtyDelta}</span>, non-object:{" "}
-              <span style={styles.mono}>{skipped.nonObject}</span>
-            </div>
+            Rows: <span style={styles.mono}>{filtered.length}</span> | With quantity:{" "}
+            <span style={styles.mono}>{qtyStats.withQty}</span> | Without quantity:{" "}
+            <span style={styles.mono}>{qtyStats.withoutQty}</span>
           </div>
         </div>
 
         {err ? <div style={styles.err}>Error: {err}</div> : null}
+        {filtered.length === 0 && !loading ? <div style={styles.empty}>No inventory items to display.</div> : null}
 
-        {derived.length === 0 && !loading ? (
-          <div style={styles.empty}>No derived quantities to display.</div>
-        ) : (
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>itemId</th>
-                  <th style={styles.thRight}>derivedQuantity</th>
-                  <th style={styles.th}>Links</th>
+        <div style={styles.tableWrap}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}>itemId</th>
+                <th style={styles.thRight}>quantity</th>
+                <th style={styles.th}>Links</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r) => (
+                <tr key={r.itemId}>
+                  <td style={styles.td}>
+                    <span style={styles.mono}>{r.itemId}</span>
+                  </td>
+                  <td style={styles.tdRight}>
+                    <span style={styles.mono}>{typeof r.quantity === "number" ? r.quantity : "—"}</span>
+                  </td>
+                  <td style={styles.td}>
+                    <div style={styles.linkRow}>
+                      <Link style={styles.link} href={itemHref(r.itemId)}>
+                        Drill-down
+                      </Link>
+                      <Link style={styles.linkSecondary} href={movementsHref(r.itemId)}>
+                        Movements
+                      </Link>
+                      <Link style={styles.linkSecondary} href={reconciliationHref(r.itemId)}>
+                        Reconcile
+                      </Link>
+                    </div>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {derived.map((r) => {
-                  const neg = typeof r.derivedQuantity === "number" && r.derivedQuantity < 0;
-                  return (
-                    <tr key={r.itemId}>
-                      <td style={styles.td}>
-                        <span style={styles.mono}>{r.itemId}</span>
-                      </td>
-                      <td style={{ ...styles.tdRight, ...(neg ? styles.neg : null) }}>
-                        <span style={styles.mono}>{r.derivedQuantity}</span>
-                      </td>
-                      <td style={styles.td}>
-                        <div style={styles.linkRow}>
-                          <Link style={styles.link} href={itemHref(r.itemId)}>
-                            Drill-down
-                          </Link>
-                          <Link style={styles.linkSecondary} href={movementsHref(r.itemId)}>
-                            Movements
-                          </Link>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section style={styles.card}>
         <div style={styles.noteTitle}>Notes</div>
         <ul style={styles.ul}>
-          <li>Negative totals are allowed (no clamping).</li>
-          <li>Only events with string itemId and numeric qtyDelta contribute to totals.</li>
-          <li>Links pass itemId via query string for cross-view coherence.</li>
+          <li>Query parameter support: /inventory/items?itemId=… focuses to a single itemId (client-side filter).</li>
+          <li>Quantity is treated as optional because inventory read payload shapes may vary.</li>
+          <li>Cross-links do not imply authority; they are navigation only.</li>
         </ul>
       </section>
     </main>
@@ -204,7 +219,16 @@ const styles = {
     marginBottom: 16,
     background: "#fff",
   },
-  actionsRow: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
+  controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
+  label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
+  input: {
+    width: 320,
+    padding: "8px 10px",
+    borderRadius: 10,
+    border: "1px solid #ccc",
+    outline: "none",
+    fontSize: 13,
+  },
   button: {
     padding: "8px 12px",
     borderRadius: 10,
@@ -213,19 +237,11 @@ const styles = {
     color: "#fff",
     cursor: "pointer",
     fontSize: 13,
+    height: 34,
   },
-  buttonSecondary: {
-    padding: "8px 12px",
-    borderRadius: 10,
-    border: "1px solid #bbb",
-    background: "#fff",
-    color: "#111",
-    cursor: "pointer",
-    fontSize: 13,
-  },
-  meta: { display: "flex", flexDirection: "column", gap: 4, marginLeft: 8, fontSize: 13 },
-  muted: { color: "#666" },
-  mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+  quickLinks: { fontSize: 13, paddingBottom: 2, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  dot: { color: "#999" },
+  meta: { fontSize: 13, color: "#444", paddingBottom: 2 },
   err: { marginTop: 10, color: "#b00020", fontSize: 13 },
   empty: { marginTop: 12, color: "#666", fontSize: 13 },
   tableWrap: { width: "100%", overflowX: "auto", marginTop: 12 },
@@ -240,10 +256,10 @@ const styles = {
     textAlign: "right",
     verticalAlign: "top",
   },
-  neg: { color: "#b00020", fontWeight: 700 },
   linkRow: { display: "flex", gap: 10, flexWrap: "wrap" },
   link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
   linkSecondary: { color: "#444", textDecoration: "none", fontSize: 13 },
+  mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
   noteTitle: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
   ul: { margin: 0, paddingLeft: 18, color: "#333", fontSize: 13, lineHeight: 1.5 },
 };
