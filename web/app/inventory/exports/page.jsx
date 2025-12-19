@@ -1,42 +1,79 @@
+// web/app/inventory/exports/page.jsx
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+
 import AdminHeader from "@/app/_ui/AdminHeader.jsx";
+import CompactBar, { useDensity } from "@/app/_ui/CompactBar.jsx";
 import LedgerFreshnessBar from "@/app/_ui/LedgerFreshnessBar.jsx";
 import IntegrityFooter from "@/app/_ui/IntegrityFooter.jsx";
+
 import { asoraGetJson, getStoredDevToken } from "@/lib/asoraFetch";
-import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
-import { toCsv, downloadCsv } from "@/app/_ui/csv.js";
+import { getLedgerEventsCached, clearLedgerCache } from "@/lib/ledgerCache";
 
 export const runtime = "edge";
 
 /**
- * U7 exports page — rewired for U8:
- * - Unified header/nav via AdminHeader
- * - Standard CSV via /_ui/csv.js
- * - Unified cache/freshness bar
- * - Integrity footer (read-only QA)
+ * U7 — READ-ONLY INTEGRITY EXPORTS (EVIDENCE MODE)
  *
- * No backend changes. No new endpoints. No writes.
+ * Guarantees:
+ * - UI-only
+ * - Read-only
+ * - No new endpoints
+ * - No writes
+ * - Deterministic outputs
+ * - UTC timestamps only
+ * - Evidence-grade CSV rules:
+ *   - stable columns
+ *   - explicit headers
+ *   - exact values
+ *   - blanks for missing
  */
 
 function utcNowIso() {
   return new Date().toISOString();
 }
 
-function stableStr(x) {
-  if (x === null || x === undefined) return "";
-  if (typeof x === "string") return x;
-  if (typeof x === "number" || typeof x === "boolean") return String(x);
+function asString(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
   try {
-    return JSON.stringify(x);
+    return JSON.stringify(v);
   } catch {
-    return String(x);
+    return String(v);
   }
 }
 
+function csvEscape(value) {
+  const s = asString(value);
+  if (s.includes('"') || s.includes(",") || s.includes("\n") || s.includes("\r")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function toCsv(headers, rows) {
+  const headerLine = headers.map(csvEscape).join(",");
+  const lines = rows.map((r) => headers.map((h) => csvEscape(r?.[h])).join(","));
+  return [headerLine, ...lines].join("\n") + "\n";
+}
+
+function downloadText(filename, text, mime = "text/csv;charset=utf-8") {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 800);
+}
+
 function coerceNumber(x) {
-  if (typeof x === "number") return Number.isFinite(x) ? x : null;
+  if (typeof x === "number") return x;
   if (typeof x === "string" && x.trim() !== "") {
     const n = Number(x);
     return Number.isFinite(n) ? n : null;
@@ -45,47 +82,42 @@ function coerceNumber(x) {
 }
 
 function isFiniteNumber(x) {
-  return typeof x === "number" && Number.isFinite(x) && !Number.isNaN(x);
+  return typeof x === "number" && Number.isFinite(x);
 }
 
 function normalizeEvents(raw) {
   const events = Array.isArray(raw?.events) ? raw.events : Array.isArray(raw) ? raw : [];
   return [...events].sort((a, b) => {
-    const ta = typeof a?.ts === "string" ? a.ts : "";
-    const tb = typeof b?.ts === "string" ? b.ts : "";
+    const ta = asString(a?.ts);
+    const tb = asString(b?.ts);
     if (ta < tb) return -1;
     if (ta > tb) return 1;
 
-    const ida =
-      (typeof a?.ledgerEventId === "string" && a.ledgerEventId) ||
-      (typeof a?.eventId === "string" && a.eventId) ||
-      (typeof a?.id === "string" && a.id) ||
-      "";
-    const idb =
-      (typeof b?.ledgerEventId === "string" && b.ledgerEventId) ||
-      (typeof b?.eventId === "string" && b.eventId) ||
-      (typeof b?.id === "string" && b.id) ||
-      "";
-    return ida.localeCompare(idb);
+    const ida = asString(a?.ledgerEventId || a?.eventId || a?.id);
+    const idb = asString(b?.ledgerEventId || b?.eventId || b?.id);
+    if (ida < idb) return -1;
+    if (ida > idb) return 1;
+
+    // deterministic final tie-breaker
+    return asString(a?.itemId).localeCompare(asString(b?.itemId));
   });
 }
 
 function deriveSnapshotFromEvents(events) {
   const totals = new Map(); // itemId -> total qtyDelta
   let skippedMissingItemId = 0;
-  let skippedNonNumericQtyDelta = 0;
+  let skippedMissingQtyDelta = 0;
 
   for (const ev of events) {
     const itemId = ev?.itemId;
-    const hasItemId = itemId !== null && itemId !== undefined && String(itemId).trim() !== "";
-    if (!hasItemId) {
+    const qtyDelta = coerceNumber(ev?.qtyDelta);
+
+    if (itemId === null || itemId === undefined || itemId === "") {
       skippedMissingItemId += 1;
       continue;
     }
-
-    const qtyDelta = coerceNumber(ev?.qtyDelta);
     if (qtyDelta === null) {
-      skippedNonNumericQtyDelta += 1;
+      skippedMissingQtyDelta += 1;
       continue;
     }
 
@@ -95,28 +127,34 @@ function deriveSnapshotFromEvents(events) {
 
   const rows = Array.from(totals.entries())
     .map(([itemId, derivedQty]) => ({ itemId, derivedQty }))
-    .sort((a, b) => a.itemId.localeCompare(b.itemId));
+    .sort((a, b) => (a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0));
 
-  return { rows, skippedMissingItemId, skippedNonNumericQtyDelta };
+  return { rows, skippedMissingItemId, skippedMissingQtyDelta };
+}
+
+async function fetchAllInventoryItems() {
+  const r = await asoraGetJson("/v1/inventory/items", {});
+  const items = Array.isArray(r?.items) ? r.items : Array.isArray(r) ? r : [];
+  return items;
 }
 
 function buildReconciliationMismatches(items, snapshotRows) {
   const inv = new Map(); // itemId -> qty (best-effort)
   for (const it of items) {
     const itemId = it?.itemId ?? it?.id;
-    if (itemId === null || itemId === undefined || String(itemId).trim() === "") continue;
-    const qty = coerceNumber(it?.qty);
+    if (itemId === null || itemId === undefined || itemId === "") continue;
+    const qty = coerceNumber(it?.qty ?? it?.quantity);
     inv.set(String(itemId), qty);
   }
 
   const led = new Map(); // itemId -> derived qty
   for (const r of snapshotRows) {
-    if (!r?.itemId) continue;
+    if (r?.itemId === null || r?.itemId === undefined || r?.itemId === "") continue;
     led.set(String(r.itemId), coerceNumber(r.derivedQty) ?? 0);
   }
 
   const allIds = new Set([...inv.keys(), ...led.keys()]);
-  const idsSorted = Array.from(allIds).sort((a, b) => a.localeCompare(b));
+  const idsSorted = Array.from(allIds).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
   const rows = [];
   for (const itemId of idsSorted) {
@@ -142,7 +180,6 @@ function buildReconciliationMismatches(items, snapshotRows) {
       });
     }
   }
-
   return rows;
 }
 
@@ -155,228 +192,133 @@ function buildAnomalies(events, snapshotRows) {
     const itemId = ev?.itemId;
     const qtyDelta = coerceNumber(ev?.qtyDelta);
 
-    const row = {
-      id: stableStr(ev?.ledgerEventId || ev?.eventId || ev?.id || ""),
-      ts: stableStr(ev?.ts || ""),
-      eventType: stableStr(ev?.eventType || ev?.type || ""),
-      itemId: itemId === null || itemId === undefined ? "" : stableStr(itemId),
+    const base = {
+      id: asString(ev?.ledgerEventId || ev?.eventId || ev?.id),
+      ts: asString(ev?.ts),
+      eventType: asString(ev?.eventType || ev?.type),
+      itemId: itemId === null || itemId === undefined ? "" : asString(itemId),
       qtyDelta: qtyDelta === null ? "" : qtyDelta,
     };
 
-    if (row.itemId === "") missingItemId.push(row);
-    if (qtyDelta === null) missingQtyDelta.push(row);
-    else if (qtyDelta < 0) negativeQtyDelta.push(row);
+    if (itemId === null || itemId === undefined || itemId === "") missingItemId.push(base);
+    if (qtyDelta === null) missingQtyDelta.push(base);
+    else if (qtyDelta < 0) negativeQtyDelta.push(base);
   }
 
   const negativeTotals = [];
   for (const r of snapshotRows) {
     const dq = coerceNumber(r?.derivedQty);
-    if (dq !== null && dq < 0) negativeTotals.push({ itemId: stableStr(r?.itemId), derivedQty: dq });
+    if (dq !== null && dq < 0) negativeTotals.push({ itemId: asString(r?.itemId), derivedQty: dq });
   }
 
-  // Deterministic row ordering for evidence output
-  function sortRows(list) {
-    return [...list].sort((a, b) => {
-      const ta = stableStr(a.ts);
-      const tb = stableStr(b.ts);
-      if (ta < tb) return -1;
-      if (ta > tb) return 1;
-      const ia = stableStr(a.id);
-      const ib = stableStr(b.id);
-      if (ia < ib) return -1;
-      if (ia > ib) return 1;
-      const xa = stableStr(a.itemId);
-      const xb = stableStr(b.itemId);
-      return xa.localeCompare(xb);
-    });
-  }
-
-  return {
-    counts: {
-      missingItemId: missingItemId.length,
-      missingQtyDelta: missingQtyDelta.length,
-      negativeQtyDelta: negativeQtyDelta.length,
-      negativeDerivedTotals: negativeTotals.length,
-    },
-    missingItemId: sortRows(missingItemId),
-    missingQtyDelta: sortRows(missingQtyDelta),
-    negativeQtyDelta: sortRows(negativeQtyDelta),
-    negativeTotals: [...negativeTotals].sort((a, b) => a.itemId.localeCompare(b.itemId)),
+  const counts = {
+    missingItemId: missingItemId.length,
+    missingQtyDelta: missingQtyDelta.length,
+    negativeQtyDelta: negativeQtyDelta.length,
+    negativeDerivedTotals: negativeTotals.length,
   };
+
+  return { counts, missingItemId, missingQtyDelta, negativeQtyDelta, negativeTotals };
 }
 
 async function fetchBuildStampSafe() {
   try {
     const r = await asoraGetJson("/__build", {});
-    return stableStr(r?.build || r?.BUILD || r?.stamp || r?.version || "");
+    return asString(r?.build || r?.BUILD || r?.stamp || r?.version || "");
   } catch {
     return "";
   }
 }
 
-async function fetchAllInventoryItems() {
-  const r = await asoraGetJson("/v1/inventory/items", {});
-  const items = Array.isArray(r?.items) ? r.items : Array.isArray(r?.data?.items) ? r.data.items : Array.isArray(r) ? r : [];
-  return items;
-}
-
 export default function InventoryExportsPage() {
+  const { isCompact } = useDensity();
+  const s = isCompact ? compact : styles;
+
   const devToken = useMemo(() => getStoredDevToken(), []);
 
   const [busy, setBusy] = useState(false);
-  const [loadingData, setLoadingData] = useState(false);
+  const [err, setErr] = useState("");
 
-  const [events, setEvents] = useState([]);
-  const [items, setItems] = useState([]);
-
+  // freshness + integrity footer
   const [lastFetchedUtc, setLastFetchedUtc] = useState("");
   const [cacheStatus, setCacheStatus] = useState("unknown"); // cached | fresh | unknown
-  const [renderedUtc, setRenderedUtc] = useState(utcNowIso());
+  const [integrity, setIntegrity] = useState({ eventsProcessed: 0, skipped: [], renderUtc: "" });
 
-  const [lastIntegrity, setLastIntegrity] = useState({
-    eventsProcessed: 0,
-    skipped: [],
-    renderUtc: "",
-  });
-
-  async function ensureData({ force = false, includeItems = false } = {}) {
-    setLoadingData(true);
-    try {
-      if (force) clearLedgerCache();
-
-      const raw = await getLedgerEventsCached(asoraGetJson);
-      const normalized = normalizeEvents(raw);
-      setEvents(normalized);
-
-      if (includeItems) {
-        const invItems = await fetchAllInventoryItems();
-        setItems(invItems);
-      }
-
-      const now = utcNowIso();
-      setLastFetchedUtc(now);
-      setRenderedUtc(now);
-      setCacheStatus(force ? "fresh" : "cached");
-
-      return { events: normalized };
-    } finally {
-      setLoadingData(false);
-    }
-  }
-
-  function updateIntegrity({ processed, skipped }) {
-    const now = utcNowIso();
-    setLastIntegrity({
-      eventsProcessed: processed,
-      skipped: skipped || [],
-      renderUtc: now,
-    });
-    setRenderedUtc(now);
-  }
+  useEffect(() => {
+    // this page does not auto-fetch; but we still stamp the render time deterministically
+    setIntegrity((x) => ({ ...x, renderUtc: utcNowIso() }));
+  }, []);
 
   async function exportMetadata() {
     const exportTsUtc = utcNowIso();
     const buildStamp = await fetchBuildStampSafe();
 
     const headers = ["exportTsUtc", "tenant", "build"];
-    const rows = [
-      {
-        exportTsUtc,
-        tenant: stableStr(devToken || ""),
-        build: stableStr(buildStamp || ""),
-      },
-    ];
+    const rows = [{ exportTsUtc, tenant: asString(devToken || ""), build: asString(buildStamp || "") }];
 
-    downloadCsv(`asora_metadata_${exportTsUtc.replace(/[:.]/g, "-")}.csv`, toCsv(headers, rows, { bom: false }));
-    updateIntegrity({ processed: events.length || 0, skipped: [] });
+    downloadText(`asora_metadata_${exportTsUtc}.csv`, toCsv(headers, rows));
   }
 
   async function exportLedgerRaw() {
     const exportTsUtc = utcNowIso();
-    const { events: evs } = await ensureData({ force: false, includeItems: false });
+    const raw = await getLedgerEventsCached(asoraGetJson);
+    const events = normalizeEvents(raw);
 
-    const headers = ["id", "ts", "eventType", "itemId", "qtyDelta", "tenantId", "refType", "refId", "actor", "reason"];
-    const rows = evs.map((e) => ({
-      id: stableStr(e?.ledgerEventId || e?.eventId || e?.id || ""),
-      ts: stableStr(e?.ts || ""),
-      eventType: stableStr(e?.eventType || e?.type || ""),
-      itemId: e?.itemId === null || e?.itemId === undefined ? "" : stableStr(e?.itemId),
-      qtyDelta: e?.qtyDelta === null || e?.qtyDelta === undefined ? "" : stableStr(e?.qtyDelta),
-      tenantId: stableStr(e?.tenantId || ""),
-      refType: stableStr(e?.refType || ""),
-      refId: stableStr(e?.refId || ""),
-      actor: stableStr(e?.actor || ""),
-      reason: stableStr(e?.reason || ""),
+    const headers = ["id", "ts", "eventType", "itemId", "qtyDelta", "refType", "refId", "actor", "reason"];
+    const rows = events.map((e) => ({
+      id: asString(e?.ledgerEventId || e?.eventId || e?.id),
+      ts: asString(e?.ts),
+      eventType: asString(e?.eventType || e?.type),
+      itemId: e?.itemId === null || e?.itemId === undefined ? "" : asString(e?.itemId),
+      qtyDelta: e?.qtyDelta === null || e?.qtyDelta === undefined ? "" : asString(e?.qtyDelta),
+      refType: e?.refType === null || e?.refType === undefined ? "" : asString(e?.refType),
+      refId: e?.refId === null || e?.refId === undefined ? "" : asString(e?.refId),
+      actor: e?.actor === null || e?.actor === undefined ? "" : asString(e?.actor),
+      reason: e?.reason === null || e?.reason === undefined ? "" : asString(e?.reason),
     }));
 
-    downloadCsv(`asora_ledger_raw_${exportTsUtc.replace(/[:.]/g, "-")}.csv`, toCsv(headers, rows, { bom: false }));
-
-    updateIntegrity({ processed: evs.length, skipped: [] });
+    downloadText(`asora_ledger_raw_${exportTsUtc}.csv`, toCsv(headers, rows));
   }
 
   async function exportSnapshotDerived() {
     const exportTsUtc = utcNowIso();
-    const { events: evs } = await ensureData({ force: false, includeItems: false });
+    const raw = await getLedgerEventsCached(asoraGetJson);
+    const events = normalizeEvents(raw);
+    const snapshot = deriveSnapshotFromEvents(events);
 
-    const snap = deriveSnapshotFromEvents(evs);
     const headers = ["itemId", "derivedQty"];
-    const rows = snap.rows.map((r) => ({ itemId: stableStr(r.itemId), derivedQty: r.derivedQty }));
+    const rows = snapshot.rows.map((r) => ({ itemId: asString(r.itemId), derivedQty: r.derivedQty }));
 
-    downloadCsv(`asora_snapshot_derived_${exportTsUtc.replace(/[:.]/g, "-")}.csv`, toCsv(headers, rows, { bom: false }));
-
-    updateIntegrity({
-      processed: evs.length,
-      skipped: [
-        { reason: "ledger event missing itemId", count: snap.skippedMissingItemId },
-        { reason: "ledger event missing/non-numeric qtyDelta", count: snap.skippedNonNumericQtyDelta },
-      ].filter((x) => x.count > 0),
-    });
+    downloadText(`asora_snapshot_derived_${exportTsUtc}.csv`, toCsv(headers, rows));
   }
 
   async function exportReconciliationMismatchesOnly() {
     const exportTsUtc = utcNowIso();
-    // Reconciliation requires inventory items + ledger events
-    const [ledRes, invItems] = await Promise.all([
-      ensureData({ force: false, includeItems: false }),
-      fetchAllInventoryItems(),
-    ]);
+    const [raw, items] = await Promise.all([getLedgerEventsCached(asoraGetJson), fetchAllInventoryItems()]);
+    const events = normalizeEvents(raw);
+    const snapshot = deriveSnapshotFromEvents(events);
 
-    setItems(invItems);
-
-    const evs = ledRes.events;
-    const snap = deriveSnapshotFromEvents(evs);
-    const mismatches = buildReconciliationMismatches(invItems, snap.rows);
+    const mismatches = buildReconciliationMismatches(items, snapshot.rows);
 
     const headers = ["itemId", "status", "inventoryQty", "ledgerQty"];
     const rows = mismatches.map((r) => ({
-      itemId: stableStr(r.itemId),
-      status: stableStr(r.status),
-      inventoryQty: r.inventoryQty === "" ? "" : stableStr(r.inventoryQty),
-      ledgerQty: r.ledgerQty === "" ? "" : stableStr(r.ledgerQty),
+      itemId: asString(r.itemId),
+      status: asString(r.status),
+      inventoryQty: r.inventoryQty === "" ? "" : asString(r.inventoryQty),
+      ledgerQty: r.ledgerQty === "" ? "" : asString(r.ledgerQty),
     }));
 
-    downloadCsv(
-      `asora_reconciliation_mismatches_${exportTsUtc.replace(/[:.]/g, "-")}.csv`,
-      toCsv(headers, rows, { bom: false })
-    );
-
-    updateIntegrity({
-      processed: evs.length,
-      skipped: [
-        { reason: "ledger event missing itemId", count: snap.skippedMissingItemId },
-        { reason: "ledger event missing/non-numeric qtyDelta", count: snap.skippedNonNumericQtyDelta },
-      ].filter((x) => x.count > 0),
-    });
+    downloadText(`asora_reconciliation_mismatches_${exportTsUtc}.csv`, toCsv(headers, rows));
   }
 
   async function exportAnomaliesSummary() {
     const exportTsUtc = utcNowIso();
-    const { events: evs } = await ensureData({ force: false, includeItems: false });
+    const raw = await getLedgerEventsCached(asoraGetJson);
+    const events = normalizeEvents(raw);
+    const snapshot = deriveSnapshotFromEvents(events);
 
-    const snap = deriveSnapshotFromEvents(evs);
-    const a = buildAnomalies(evs, snap.rows);
+    const a = buildAnomalies(events, snapshot.rows);
 
-    // COUNTS CSV
     const countHeaders = ["metric", "count"];
     const countRows = [
       { metric: "missingItemId", count: a.counts.missingItemId },
@@ -385,7 +327,6 @@ export default function InventoryExportsPage() {
       { metric: "negativeDerivedTotals", count: a.counts.negativeDerivedTotals },
     ];
 
-    // ROWS CSV
     const rowHeaders = ["kind", "id", "ts", "eventType", "itemId", "qtyDelta", "derivedQty"];
     const rows = [];
 
@@ -398,128 +339,222 @@ export default function InventoryExportsPage() {
         id: "",
         ts: "",
         eventType: "",
-        itemId: stableStr(r.itemId),
+        itemId: asString(r.itemId),
         qtyDelta: "",
-        derivedQty: stableStr(r.derivedQty),
+        derivedQty: asString(r.derivedQty),
       });
     }
 
-    // Single evidence file pattern from U7: deterministic and explicit sections.
-    const countsCsv = toCsv(countHeaders, countRows, { bom: false });
-    const rowsCsv = toCsv(rowHeaders, rows, { bom: false });
-    const combined = `COUNTS\n${countsCsv}\nROWS\n${rowsCsv}`;
+    rows.sort((x, y) => {
+      const kx = asString(x.kind);
+      const ky = asString(y.kind);
+      if (kx < ky) return -1;
+      if (kx > ky) return 1;
 
-    downloadCsv(`asora_anomalies_${exportTsUtc.replace(/[:.]/g, "-")}.csv`, combined);
+      const tx = asString(x.ts);
+      const ty = asString(y.ts);
+      if (tx < ty) return -1;
+      if (tx > ty) return 1;
 
-    updateIntegrity({
-      processed: evs.length,
-      skipped: [
-        { reason: "ledger event missing itemId", count: snap.skippedMissingItemId },
-        { reason: "ledger event missing/non-numeric qtyDelta", count: snap.skippedNonNumericQtyDelta },
-      ].filter((x) => x.count > 0),
+      const ix = asString(x.id);
+      const iy = asString(y.id);
+      if (ix < iy) return -1;
+      if (ix > iy) return 1;
+
+      const ax = asString(x.itemId);
+      const ay = asString(y.itemId);
+      if (ax < ay) return -1;
+      if (ax > ay) return 1;
+
+      return 0;
     });
+
+    const csvCounts = toCsv(countHeaders, countRows.map((r) => ({ metric: r.metric, count: r.count })));
+    const csvRows = toCsv(rowHeaders, rows);
+
+    const combined = `COUNTS\n${csvCounts}\nROWS\n${csvRows}`;
+    downloadText(`asora_anomalies_${exportTsUtc}.csv`, combined);
   }
 
   async function exportAll() {
     setBusy(true);
+    setErr("");
     try {
-      // Warm cache deterministically for this run
-      await ensureData({ force: false, includeItems: true });
+      // Stamp freshness once per “Export All” run
+      const now = utcNowIso();
+      setLastFetchedUtc(now);
+      setCacheStatus("cached");
+      setIntegrity((x) => ({ ...x, renderUtc: now }));
 
       await exportMetadata();
       await exportLedgerRaw();
       await exportSnapshotDerived();
       await exportReconciliationMismatchesOnly();
       await exportAnomaliesSummary();
+
+      // After exporting, update integrity footer with the current cached ledger size + skips
+      const raw = await getLedgerEventsCached(asoraGetJson);
+      const events = normalizeEvents(raw);
+      const snapshot = deriveSnapshotFromEvents(events);
+
+      const skipped = [
+        ...(snapshot.skippedMissingItemId ? [{ kind: "LEDGER_MISSING_ITEM_ID", count: snapshot.skippedMissingItemId }] : []),
+        ...(snapshot.skippedMissingQtyDelta ? [{ kind: "LEDGER_MISSING_QTY_DELTA", count: snapshot.skippedMissingQtyDelta }] : []),
+      ];
+      setIntegrity({ eventsProcessed: events.length, skipped, renderUtc: utcNowIso() });
+    } catch (e) {
+      setErr(e?.message || "Export failed.");
     } finally {
       setBusy(false);
     }
   }
 
+  function forceRefreshLedgerCache() {
+    clearLedgerCache();
+    setCacheStatus("unknown");
+  }
+
   return (
-    <main style={styles.shell}>
+    <main style={s.shell}>
       <AdminHeader
         title="Integrity Exports"
-        subtitle="Evidence-grade CSV exports (client-generated). Stable headers, deterministic ordering, UTC timestamps. No writes."
+        subtitle="Evidence-grade CSV exports generated client-side from read-only inventory + ledger reads."
       >
         <LedgerFreshnessBar
           lastFetchedUtc={lastFetchedUtc}
           cacheStatus={cacheStatus}
-          busy={loadingData || busy}
-          onRefreshCached={() => ensureData({ force: false, includeItems: true })}
-          onRefreshForce={() => ensureData({ force: true, includeItems: true })}
-          onClearCache={() => {
-            clearLedgerCache();
-            setCacheStatus("unknown");
+          busy={busy}
+          onRefreshCached={async () => {
+            setBusy(true);
+            setErr("");
+            try {
+              const raw = await getLedgerEventsCached(asoraGetJson);
+              const events = normalizeEvents(raw);
+              const snapshot = deriveSnapshotFromEvents(events);
+
+              setLastFetchedUtc(utcNowIso());
+              setCacheStatus("cached");
+
+              const skipped = [
+                ...(snapshot.skippedMissingItemId ? [{ kind: "LEDGER_MISSING_ITEM_ID", count: snapshot.skippedMissingItemId }] : []),
+                ...(snapshot.skippedMissingQtyDelta ? [{ kind: "LEDGER_MISSING_QTY_DELTA", count: snapshot.skippedMissingQtyDelta }] : []),
+              ];
+              setIntegrity({ eventsProcessed: events.length, skipped, renderUtc: utcNowIso() });
+            } catch (e) {
+              setErr(e?.message || "Refresh failed.");
+            } finally {
+              setBusy(false);
+            }
           }}
+          onRefreshForce={async () => {
+            setBusy(true);
+            setErr("");
+            try {
+              clearLedgerCache();
+              const raw = await getLedgerEventsCached(asoraGetJson);
+              const events = normalizeEvents(raw);
+              const snapshot = deriveSnapshotFromEvents(events);
+
+              setLastFetchedUtc(utcNowIso());
+              setCacheStatus("fresh");
+
+              const skipped = [
+                ...(snapshot.skippedMissingItemId ? [{ kind: "LEDGER_MISSING_ITEM_ID", count: snapshot.skippedMissingItemId }] : []),
+                ...(snapshot.skippedMissingQtyDelta ? [{ kind: "LEDGER_MISSING_QTY_DELTA", count: snapshot.skippedMissingQtyDelta }] : []),
+              ];
+              setIntegrity({ eventsProcessed: events.length, skipped, renderUtc: utcNowIso() });
+            } catch (e) {
+              setErr(e?.message || "Force refresh failed.");
+            } finally {
+              setBusy(false);
+            }
+          }}
+          onClearCache={forceRefreshLedgerCache}
         />
       </AdminHeader>
 
-      <section style={styles.card}>
-        <div style={styles.grid}>
-          <div style={styles.kv}>
-            <div style={styles.k}>Tenant (dev_token)</div>
-            <div style={styles.vMono}>{devToken || "(none)"}</div>
-          </div>
+      <CompactBar here="Exports" />
 
-          <div style={styles.kv}>
-            <div style={styles.k}>UTC now</div>
-            <div style={styles.vMono}>{utcNowIso()}</div>
+      <section style={s.card}>
+        <div style={s.metaRow}>
+          <div style={s.metaItem}>
+            <div style={s.metaLabel}>Tenant (dev_token)</div>
+            <div style={s.metaValue}>{devToken || "(none)"}</div>
           </div>
-
-          <div style={styles.kv}>
-            <div style={styles.k}>Loaded</div>
-            <div style={styles.vMono}>
-              events={events.length} / items={Array.isArray(items) ? items.length : 0}
-            </div>
+          <div style={s.metaItem}>
+            <div style={s.metaLabel}>UTC Now</div>
+            <div style={s.metaValue}>{utcNowIso()}</div>
           </div>
         </div>
 
-        <div style={styles.hr} />
+        {err ? <div style={s.err}>Error: {err}</div> : null}
 
-        <div style={styles.actions}>
-          <button style={styles.primaryBtn} onClick={exportAll} disabled={busy || loadingData}>
+        <div style={s.cardTitle}>Evidence Exports</div>
+        <div style={s.note}>
+          Deterministic, client-generated CSV exports. Stable column ordering. Explicit headers. Exact values only. Missing fields
+          left blank.
+        </div>
+
+        <div style={s.actions}>
+          <button style={s.primaryBtn} onClick={exportAll} disabled={busy}>
             Export All (CSV)
           </button>
 
-          <button style={styles.btn} onClick={exportMetadata} disabled={busy}>
+          <button style={s.btn} onClick={exportMetadata} disabled={busy}>
             Metadata (CSV)
           </button>
-
-          <button style={styles.btn} onClick={exportLedgerRaw} disabled={busy || loadingData}>
+          <button style={s.btn} onClick={exportLedgerRaw} disabled={busy}>
             Ledger Events — Raw (CSV)
           </button>
-
-          <button style={styles.btn} onClick={exportSnapshotDerived} disabled={busy || loadingData}>
+          <button style={s.btn} onClick={exportSnapshotDerived} disabled={busy}>
             Inventory Snapshot — Derived (CSV)
           </button>
-
-          <button style={styles.btn} onClick={exportReconciliationMismatchesOnly} disabled={busy || loadingData}>
+          <button style={s.btn} onClick={exportReconciliationMismatchesOnly} disabled={busy}>
             Reconciliation — Mismatches Only (CSV)
           </button>
-
-          <button style={styles.btn} onClick={exportAnomaliesSummary} disabled={busy || loadingData}>
+          <button style={s.btn} onClick={exportAnomaliesSummary} disabled={busy}>
             Anomalies — Summary + Rows (CSV)
           </button>
         </div>
 
-        <div style={styles.note}>
-          All exports are client-generated. Column ordering is stable and centralized via the shared CSV utility. Deterministic row
-          ordering is enforced by sorting rules inside each export path.
+        <div style={s.hr} />
+
+        <div style={s.row}>
+          <button style={s.mutedBtn} onClick={forceRefreshLedgerCache} disabled={busy}>
+            Clear Ledger Cache (client-only)
+          </button>
+          <div style={s.smallNote}>Clears in-tab cache only. No backend writes.</div>
         </div>
       </section>
 
-      <IntegrityFooter
-        eventsProcessed={lastIntegrity.eventsProcessed}
-        skipped={lastIntegrity.skipped}
-        renderUtc={lastIntegrity.renderUtc || renderedUtc || utcNowIso()}
-      />
+      <section style={s.card}>
+        <div style={s.cardTitle}>Navigation</div>
+        <div style={s.links}>
+          <Link style={s.link} href="/inventory/snapshot">
+            Inventory Snapshot
+          </Link>
+          <Link style={s.link} href="/inventory/reconciliation">
+            Inventory Reconciliation
+          </Link>
+          <Link style={s.link} href="/inventory/anomalies">
+            Inventory Anomalies
+          </Link>
+          <Link style={s.link} href="/inventory/item">
+            Item Drill-down
+          </Link>
+          <Link style={s.linkSecondary} href="/">
+            Home
+          </Link>
+        </div>
+      </section>
+
+      <IntegrityFooter eventsProcessed={integrity.eventsProcessed} skipped={integrity.skipped} renderUtc={integrity.renderUtc} />
     </main>
   );
 }
 
 const styles = {
-  shell: { minHeight: "100vh", background: "#0b0f14", padding: 16 },
+  shell: { minHeight: "100vh", padding: 16, background: "#0b0f14", color: "#e6edf3" },
 
   card: {
     maxWidth: 1200,
@@ -528,22 +563,20 @@ const styles = {
     borderRadius: 14,
     background: "rgba(255,255,255,0.04)",
     border: "1px solid rgba(255,255,255,0.10)",
-    color: "#e6edf3",
   },
 
-  grid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 },
-  kv: {
-    border: "1px solid rgba(255,255,255,0.10)",
-    background: "rgba(0,0,0,0.18)",
-    borderRadius: 12,
-    padding: 12,
-  },
-  k: { fontSize: 12, opacity: 0.75, marginBottom: 6 },
-  vMono: { fontSize: 13, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+  metaRow: { display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12 },
+  metaItem: { display: "flex", flexDirection: "column", gap: 4 },
+  metaLabel: { fontSize: 11, opacity: 0.7 },
+  metaValue: { fontSize: 13, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
 
-  hr: { height: 1, background: "rgba(255,255,255,0.08)", margin: "14px 0" },
+  err: { marginBottom: 12, color: "#ff7b7b", fontSize: 13 },
 
-  actions: { display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" },
+  cardTitle: { fontSize: 14, fontWeight: 800, marginBottom: 10 },
+  note: { fontSize: 12, opacity: 0.8, marginBottom: 12, lineHeight: 1.45 },
+  smallNote: { fontSize: 12, opacity: 0.75 },
+
+  actions: { display: "flex", flexWrap: "wrap", gap: 10 },
 
   primaryBtn: {
     padding: "10px 12px",
@@ -562,6 +595,47 @@ const styles = {
     color: "#e6edf3",
     cursor: "pointer",
   },
+  mutedBtn: {
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(0,0,0,0.18)",
+    color: "#e6edf3",
+    cursor: "pointer",
+  },
 
-  note: { marginTop: 12, fontSize: 12, opacity: 0.8, lineHeight: 1.45 },
+  hr: { height: 1, background: "rgba(255,255,255,0.08)", margin: "14px 0" },
+  row: { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" },
+
+  links: { display: "flex", flexWrap: "wrap", gap: 10 },
+  link: {
+    padding: "8px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.04)",
+    color: "#e6edf3",
+    textDecoration: "none",
+    fontSize: 13,
+  },
+  linkSecondary: {
+    padding: "8px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: "rgba(255,255,255,0.02)",
+    color: "#e6edf3",
+    textDecoration: "none",
+    fontSize: 13,
+    opacity: 0.9,
+  },
+};
+
+const compact = {
+  ...styles,
+  shell: { ...styles.shell, padding: 12 },
+  card: { ...styles.card, padding: 12, margin: "0 auto 12px auto" },
+  btn: { ...styles.btn, padding: "8px 10px", fontSize: 12 },
+  primaryBtn: { ...styles.primaryBtn, padding: "8px 10px", fontSize: 12 },
+  mutedBtn: { ...styles.mutedBtn, padding: "8px 10px", fontSize: 12 },
+  link: { ...styles.link, fontSize: 12 },
+  linkSecondary: { ...styles.linkSecondary, fontSize: 12 },
 };
