@@ -1,3 +1,5 @@
+export const runtime = "edge";
+
 export const metadata = {
   title: "Asora — U1",
   description: "Asora U1 read-only admin console"
