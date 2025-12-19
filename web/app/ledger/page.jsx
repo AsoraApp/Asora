@@ -1,13 +1,10 @@
 import LedgerClient from "./ui/LedgerClient";
 import AdminHeader from "../_ui/AdminHeader.jsx";
-import { getStoredDevToken } from "@/lib/asoraFetch";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
 export default function LedgerPage() {
-  const tenantId = getStoredDevToken?.() || "";
-
   return (
     <main style={styles.shell}>
       <AdminHeader
@@ -17,9 +14,7 @@ export default function LedgerPage() {
             Read-only. Fetches <code style={styles.code}>GET /v1/ledger/events</code> using dev_token.
           </>
         }
-        tenantId={tenantId}
       />
-
       <LedgerClient />
     </main>
   );
