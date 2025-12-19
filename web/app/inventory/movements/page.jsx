@@ -5,45 +5,67 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
-import { usePersistedString } from "../_ui/useViewState.jsx";
 import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
 import SavedViewsBar from "@/app/ui/SavedViewsBar";
 
 export const runtime = "edge";
 
-const STORE_KEY = "asora_view:movements:itemId";
-const SAVED_VIEWS_KEY = "asora_saved_views:movements:itemId";
+const LAST_STORE_KEY = "asora_view:movements:lastItemId"; // remembers what user typed, but NOT auto-applied on first load
+const SAVED_VIEWS_KEY = "asora_saved_views:movements:focusItemId";
 const PAGE_SIZE = 200;
 
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
 }
 
+function safeReadLocalStorage(key) {
+  try {
+    return localStorage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+function safeWriteLocalStorage(key, value) {
+  try {
+    if (!value) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
+}
+
 export default function InventoryMovementsPage() {
   const { isCompact } = useDensity();
+  const s = isCompact ? compact : styles;
 
   const sp = useSearchParams();
-  const qpItemId = sp?.get("itemId") || "";
+  const qpItemId = (sp?.get("itemId") || "").trim();
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [persistedItemId, setPersistedItemId] = usePersistedString(STORE_KEY, "");
-
-  // Query-param wins; otherwise fall back to persisted.
-  const [filterItemId, setFilterItemId] = useState(qpItemId || persistedItemId);
   const [events, setEvents] = useState([]);
 
-  // Deterministic paging state (reset when filter changes)
+  // Filter starts blank unless query param is present
+  const [filterItemId, setFilterItemId] = useState("");
+
+  // “last typed” value is shown but NOT auto-applied on first load
+  const [lastTypedItemId, setLastTypedItemId] = useState("");
+
+  // Deterministic paging state (reset when focus changes)
   const [page, setPage] = useState(1);
 
-  // If URL itemId changes, adopt it and persist it.
   useEffect(() => {
-    if (qpItemId && qpItemId !== filterItemId) {
+    // hydrate “last typed” once (display only)
+    const v = safeReadLocalStorage(LAST_STORE_KEY);
+    if (v) setLastTypedItemId(v);
+  }, []);
+
+  // Query param wins whenever present/changes (this IS deliberate deep-linking)
+  useEffect(() => {
+    if (qpItemId) {
       setFilterItemId(qpItemId);
-      setPersistedItemId(qpItemId);
       setPage(1);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qpItemId]);
 
   async function load({ force = false } = {}) {
@@ -86,7 +108,6 @@ export default function InventoryMovementsPage() {
     return events.filter((e) => typeof e?.itemId === "string" && e.itemId === focus);
   }, [events, focus]);
 
-  // Reset paging when user types a different filter (local input) OR when saved view applied.
   useEffect(() => {
     setPage(1);
   }, [focus]);
@@ -101,11 +122,18 @@ export default function InventoryMovementsPage() {
   function applySaved(value) {
     const v = (value || "").trim();
     setFilterItemId(v);
-    setPersistedItemId(v);
     setPage(1);
+
+    // applying a saved view counts as deliberate usage; update “last typed”
+    setLastTypedItemId(v);
+    safeWriteLocalStorage(LAST_STORE_KEY, v);
   }
 
-  const s = isCompact ? compact : styles;
+  function applyLastTyped() {
+    const v = (lastTypedItemId || "").trim();
+    setFilterItemId(v);
+    setPage(1);
+  }
 
   return (
     <main style={s.shell}>
@@ -114,8 +142,7 @@ export default function InventoryMovementsPage() {
       <header style={s.header}>
         <div style={s.title}>Inventory Movements</div>
         <div style={s.sub}>
-          Chronological, ledger-derived movement timeline (read-only). Filter is saved locally. Ledger fetch is cached
-          per tab.
+          Chronological, ledger-derived movement timeline (read-only). Filter is optional. Ledger fetch is cached per tab.
         </div>
       </header>
 
@@ -129,7 +156,11 @@ export default function InventoryMovementsPage() {
               onChange={(e) => {
                 const v = e.target.value;
                 setFilterItemId(v);
-                setPersistedItemId(v);
+                setPage(1);
+
+                // typing is deliberate; remember as “last typed”
+                setLastTypedItemId(v);
+                safeWriteLocalStorage(LAST_STORE_KEY, v);
               }}
               placeholder="e.g. ITEM-123"
             />
@@ -142,6 +173,12 @@ export default function InventoryMovementsPage() {
           <button style={s.buttonSecondary} onClick={() => load({ force: true })} disabled={loading}>
             Refresh (force)
           </button>
+
+          {lastTypedItemId && !focus ? (
+            <button style={s.buttonSecondary} onClick={applyLastTyped} title="Applies the last value you typed previously">
+              Use last ({lastTypedItemId})
+            </button>
+          ) : null}
 
           {focus ? (
             <div style={s.quickLinks}>
@@ -157,14 +194,8 @@ export default function InventoryMovementsPage() {
           </div>
         </div>
 
-        {/* Saved Views (localStorage only) */}
         <div style={{ marginTop: 12 }}>
-          <SavedViewsBar
-            storageKey={SAVED_VIEWS_KEY}
-            valueLabel="itemId"
-            currentValue={focus}
-            onApply={applySaved}
-          />
+          <SavedViewsBar storageKey={SAVED_VIEWS_KEY} valueLabel="focus itemId" currentValue={focus} onApply={applySaved} />
         </div>
 
         {err ? <div style={s.err}>Error: {err}</div> : null}
@@ -172,21 +203,13 @@ export default function InventoryMovementsPage() {
 
         {filtered.length > 0 ? (
           <div style={s.pagerRow}>
-            <button
-              style={s.pagerBtn}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page <= 1}
-            >
+            <button style={s.pagerBtn} onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
               Prev
             </button>
             <div style={s.pagerText}>
               Page <span style={s.mono}>{page}</span> / <span style={s.mono}>{pageCount}</span>
             </div>
-            <button
-              style={s.pagerBtn}
-              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-              disabled={page >= pageCount}
-            >
+            <button style={s.pagerBtn} onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount}>
               Next
             </button>
             <button
@@ -225,9 +248,7 @@ export default function InventoryMovementsPage() {
                     <td style={s.td}>
                       <span style={s.mono}>{ts}</span>
                     </td>
-                    <td style={s.td}>
-                      {itemId ? <span style={s.mono}>{itemId}</span> : <span style={s.muted}>—</span>}
-                    </td>
+                    <td style={s.td}>{itemId ? <span style={s.mono}>{itemId}</span> : <span style={s.muted}>—</span>}</td>
                     <td style={{ ...s.tdRight, ...(neg ? s.neg : null) }}>
                       <span style={s.mono}>{typeof q === "number" ? q : "—"}</span>
                     </td>
@@ -255,6 +276,7 @@ export default function InventoryMovementsPage() {
           <li>Sorting is deterministic: ts ascending, then id as a tie-breaker if present.</li>
           <li>Cached refresh avoids re-downloading ledger events across views in the same tab.</li>
           <li>Force refresh explicitly clears the cache and re-fetches.</li>
+          <li>Last typed filter is remembered locally but is not auto-applied on first load.</li>
           <li>Saved Views are local-only (localStorage) and do not affect backend behavior.</li>
         </ul>
       </section>
