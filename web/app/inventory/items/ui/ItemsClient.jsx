@@ -1,17 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { asoraGetJson } from "@/lib/asoraFetch";
-
-const DEFAULT_DEV_TOKEN = "tenant:demo";
+import { asoraGetJson, getStoredDevToken } from "@/lib/asoraFetch";
 
 export default function ItemsClient() {
-  const [devToken, setDevToken] = useState(DEFAULT_DEV_TOKEN);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
 
-  const query = useMemo(() => ({ dev_token: devToken }), [devToken]);
+  const devToken = useMemo(() => getStoredDevToken(), []);
+
+  const query = useMemo(() => {
+    // dev_token is injected automatically by asoraFetch if present in localStorage.
+    return {};
+  }, []);
 
   async function load() {
     setLoading(true);
@@ -27,6 +29,8 @@ export default function ItemsClient() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const missingToken = !devToken;
 
   const items = useMemo(() => {
     const raw = result?.ok ? result?.data?.items : null;
@@ -54,21 +58,30 @@ export default function ItemsClient() {
           details: result.details
         };
 
+  const authRequired =
+    !result?.ok &&
+    (result?.status === 401 || result?.code === "AUTH_REQUIRED" || result?.error === "UNAUTHORIZED");
+
   return (
     <section style={styles.grid}>
       <div style={styles.panel}>
         <div style={styles.panelTitle}>Controls</div>
 
-        <div style={styles.field}>
-          <div style={styles.label}>dev_token</div>
-          <input
-            style={styles.input}
-            value={devToken}
-            onChange={(e) => setDevToken(e.target.value)}
-            placeholder="tenant:demo"
-            spellCheck={false}
-          />
-        </div>
+        {missingToken ? (
+          <div style={styles.bannerWarn}>
+            <div style={styles.bannerTitle}>dev_token not set</div>
+            <div style={styles.bannerBody}>
+              Set <code style={styles.code}>dev_token</code> in the header bar, then refresh.
+            </div>
+          </div>
+        ) : (
+          <div style={styles.bannerOk}>
+            <div style={styles.bannerTitle}>dev_token active</div>
+            <div style={styles.bannerBody}>
+              Requests are tenant-scoped via <code style={styles.code}>dev_token</code> from localStorage.
+            </div>
+          </div>
+        )}
 
         <div style={styles.field}>
           <div style={styles.label}>Search (name / sku / id)</div>
@@ -90,6 +103,15 @@ export default function ItemsClient() {
 
       <div style={styles.panel}>
         <div style={styles.panelTitle}>Items</div>
+
+        {authRequired ? (
+          <div style={styles.bannerWarn}>
+            <div style={styles.bannerTitle}>Authentication required</div>
+            <div style={styles.bannerBody}>
+              Backend returned 401. Set <code style={styles.code}>dev_token</code> in the header bar and refresh.
+            </div>
+          </div>
+        ) : null}
 
         {errorBox ? (
           <div style={styles.error}>
@@ -230,5 +252,22 @@ const styles = {
   },
   errorTitle: { fontWeight: 800, marginBottom: 6 },
   errorLine: { fontSize: 13, marginBottom: 4 },
-  details: { marginTop: 8 }
+  details: { marginTop: 8 },
+  bannerWarn: {
+    border: "1px solid rgba(255,200,80,0.35)",
+    background: "rgba(255,200,80,0.08)",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 12
+  },
+  bannerOk: {
+    border: "1px solid rgba(100,220,160,0.35)",
+    background: "rgba(100,220,160,0.08)",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 12
+  },
+  bannerTitle: { fontWeight: 800, marginBottom: 6 },
+  bannerBody: { fontSize: 13, opacity: 0.9, lineHeight: 1.35 },
+  code: { background: "rgba(255,255,255,0.06)", padding: "2px 6px", borderRadius: 8 }
 };
