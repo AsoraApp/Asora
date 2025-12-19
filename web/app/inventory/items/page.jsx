@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
+import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 
 export const runtime = "edge";
 
@@ -57,6 +58,8 @@ function normalizeInventoryItemsPayload(r) {
 }
 
 export default function InventoryItemsPage() {
+  const { isCompact } = useDensity();
+
   const sp = useSearchParams();
   const initialFocus = sp?.get("itemId") || "";
 
@@ -101,98 +104,89 @@ export default function InventoryItemsPage() {
     return { withQty, withoutQty };
   }, [filtered]);
 
-  return (
-    <main style={styles.shell}>
-      <header style={styles.topbar}>
-        <div style={styles.brandRow}>
-          <div style={styles.brand}>Asora</div>
-          <div style={styles.nav}>
-            <Link href="/" style={styles.navLink}>
-              Home
-            </Link>
-            <span style={styles.navSep}>/</span>
-            <span style={styles.navHere}>Inventory Items</span>
-          </div>
-        </div>
-      </header>
+  const s = isCompact ? compact : styles;
 
-      <header style={styles.header}>
-        <div style={styles.title}>Inventory Items</div>
-        <div style={styles.sub}>
+  return (
+    <main style={s.shell}>
+      <CompactBar here="Inventory Items" />
+
+      <header style={s.header}>
+        <div style={s.title}>Inventory Items</div>
+        <div style={s.sub}>
           Read-only inventory item list (best-effort shape). Deterministic ordering by itemId. Cross-links provide
           coherence across derived views.
         </div>
       </header>
 
-      <section style={styles.card}>
-        <div style={styles.controls}>
-          <label style={styles.label}>
+      <section style={s.card}>
+        <div style={s.controls}>
+          <label style={s.label}>
             Focus itemId (optional)
             <input
-              style={styles.input}
+              style={s.input}
               value={focusItemId}
               onChange={(e) => setFocusItemId(e.target.value)}
               placeholder="e.g. ITEM-123"
             />
           </label>
 
-          <button style={styles.button} onClick={load} disabled={loading}>
+          <button style={s.button} onClick={load} disabled={loading}>
             {loading ? "Refreshing..." : "Refresh"}
           </button>
 
           {focus ? (
-            <div style={styles.quickLinks}>
-              <Link style={styles.link} href={itemHref(focus)}>
+            <div style={s.quickLinks}>
+              <Link style={s.link} href={itemHref(focus)}>
                 Drill-down for {focus}
               </Link>
-              <span style={styles.dot}>·</span>
-              <Link style={styles.linkSecondary} href={movementsHref(focus)}>
+              <span style={s.dot}>·</span>
+              <Link style={s.linkSecondary} href={movementsHref(focus)}>
                 Movements for {focus}
               </Link>
-              <span style={styles.dot}>·</span>
-              <Link style={styles.linkSecondary} href={reconciliationHref(focus)}>
+              <span style={s.dot}>·</span>
+              <Link style={s.linkSecondary} href={reconciliationHref(focus)}>
                 Reconcile {focus}
               </Link>
             </div>
           ) : null}
 
-          <div style={styles.meta}>
-            Rows: <span style={styles.mono}>{filtered.length}</span> | With quantity:{" "}
-            <span style={styles.mono}>{qtyStats.withQty}</span> | Without quantity:{" "}
-            <span style={styles.mono}>{qtyStats.withoutQty}</span>
+          <div style={s.meta}>
+            Rows: <span style={s.mono}>{filtered.length}</span> | With quantity:{" "}
+            <span style={s.mono}>{qtyStats.withQty}</span> | Without quantity:{" "}
+            <span style={s.mono}>{qtyStats.withoutQty}</span>
           </div>
         </div>
 
-        {err ? <div style={styles.err}>Error: {err}</div> : null}
-        {filtered.length === 0 && !loading ? <div style={styles.empty}>No inventory items to display.</div> : null}
+        {err ? <div style={s.err}>Error: {err}</div> : null}
+        {filtered.length === 0 && !loading ? <div style={s.empty}>No inventory items to display.</div> : null}
 
-        <div style={styles.tableWrap}>
-          <table style={styles.table}>
+        <div style={s.tableWrap}>
+          <table style={s.table}>
             <thead>
               <tr>
-                <th style={styles.th}>itemId</th>
-                <th style={styles.thRight}>quantity</th>
-                <th style={styles.th}>Links</th>
+                <th style={s.th}>itemId</th>
+                <th style={s.thRight}>quantity</th>
+                <th style={s.th}>Links</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((r) => (
                 <tr key={r.itemId}>
-                  <td style={styles.td}>
-                    <span style={styles.mono}>{r.itemId}</span>
+                  <td style={s.td}>
+                    <span style={s.mono}>{r.itemId}</span>
                   </td>
-                  <td style={styles.tdRight}>
-                    <span style={styles.mono}>{typeof r.quantity === "number" ? r.quantity : "—"}</span>
+                  <td style={s.tdRight}>
+                    <span style={s.mono}>{typeof r.quantity === "number" ? r.quantity : "—"}</span>
                   </td>
-                  <td style={styles.td}>
-                    <div style={styles.linkRow}>
-                      <Link style={styles.link} href={itemHref(r.itemId)}>
+                  <td style={s.td}>
+                    <div style={s.linkRow}>
+                      <Link style={s.link} href={itemHref(r.itemId)}>
                         Drill-down
                       </Link>
-                      <Link style={styles.linkSecondary} href={movementsHref(r.itemId)}>
+                      <Link style={s.linkSecondary} href={movementsHref(r.itemId)}>
                         Movements
                       </Link>
-                      <Link style={styles.linkSecondary} href={reconciliationHref(r.itemId)}>
+                      <Link style={s.linkSecondary} href={reconciliationHref(r.itemId)}>
                         Reconcile
                       </Link>
                     </div>
@@ -204,9 +198,9 @@ export default function InventoryItemsPage() {
         </div>
       </section>
 
-      <section style={styles.card}>
-        <div style={styles.noteTitle}>Notes</div>
-        <ul style={styles.ul}>
+      <section style={s.card}>
+        <div style={s.noteTitle}>Notes</div>
+        <ul style={s.ul}>
           <li>Query parameter support: /inventory/items?itemId=… focuses to a single itemId (client-side filter).</li>
           <li>Quantity is treated as optional because inventory read payload shapes may vary.</li>
           <li>Cross-links do not imply authority; they are navigation only.</li>
@@ -219,14 +213,6 @@ export default function InventoryItemsPage() {
 const styles = {
   shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
 
-  topbar: { marginBottom: 14 },
-  brandRow: { display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 10 },
-  brand: { fontSize: 16, fontWeight: 800, letterSpacing: 0.2 },
-  nav: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-  navLink: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
-  navHere: { color: "#222", fontSize: 13, fontWeight: 700 },
-  navSep: { color: "#999", fontSize: 13 },
-
   header: { marginBottom: 16 },
   title: { fontSize: 22, fontWeight: 700 },
   sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
@@ -236,6 +222,7 @@ const styles = {
   label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
   input: { width: 320, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
   button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
+
   quickLinks: { fontSize: 13, paddingBottom: 2, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
   dot: { color: "#999" },
   meta: { fontSize: 13, color: "#444", paddingBottom: 2 },
@@ -257,4 +244,34 @@ const styles = {
   mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
   noteTitle: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
   ul: { margin: 0, paddingLeft: 18, color: "#333", fontSize: 13, lineHeight: 1.5 },
+};
+
+const compact = {
+  ...styles,
+  shell: { ...styles.shell, padding: 14 },
+  header: { marginBottom: 10 },
+  title: { fontSize: 18, fontWeight: 750 },
+  sub: { ...styles.sub, fontSize: 12 },
+
+  card: { ...styles.card, padding: 12, marginBottom: 12 },
+  label: { ...styles.label, fontSize: 12 },
+  input: { ...styles.input, padding: "6px 8px", fontSize: 12 },
+  button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
+
+  quickLinks: { ...styles.quickLinks, fontSize: 12 },
+  meta: { ...styles.meta, fontSize: 12 },
+
+  err: { ...styles.err, fontSize: 12 },
+  empty: { ...styles.empty, fontSize: 12 },
+
+  th: { ...styles.th, padding: "8px 6px", fontSize: 11 },
+  thRight: { ...styles.thRight, padding: "8px 6px", fontSize: 11 },
+  td: { ...styles.td, padding: "8px 6px", fontSize: 12 },
+  tdRight: { ...styles.tdRight, padding: "8px 6px", fontSize: 12 },
+
+  link: { ...styles.link, fontSize: 12 },
+  linkSecondary: { ...styles.linkSecondary, fontSize: 12 },
+
+  noteTitle: { ...styles.noteTitle, fontSize: 13 },
+  ul: { ...styles.ul, fontSize: 12 },
 };
