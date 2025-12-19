@@ -209,7 +209,11 @@ export default function InventoryMovementsPage() {
             <div style={s.pagerText}>
               Page <span style={s.mono}>{page}</span> / <span style={s.mono}>{pageCount}</span>
             </div>
-            <button style={s.pagerBtn} onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount}>
+            <button
+              style={s.pagerBtn}
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              disabled={page >= pageCount}
+            >
               Next
             </button>
             <button
