@@ -39,6 +39,29 @@ function normalizeInventoryItemsPayload(r) {
   return out;
 }
 
+function csvEscape(v) {
+  const s = String(v ?? "");
+  if (s.includes('"') || s.includes(",") || s.includes("\n") || s.includes("\r")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function downloadCsv(filename, header, rows) {
+  const lines = [];
+  lines.push(header.map(csvEscape).join(","));
+  for (const r of rows) lines.push(r.map(csvEscape).join(","));
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export default function InventoryReconciliationPage() {
   const { isCompact } = useDensity();
 
@@ -66,7 +89,10 @@ export default function InventoryReconciliationPage() {
     setLoading(true);
     setErr("");
     try {
-      const [invR, ledR] = await Promise.all([asoraGetJson("/v1/inventory/items", {}), asoraGetJson("/v1/ledger/events", {})]);
+      const [invR, ledR] = await Promise.all([
+        asoraGetJson("/v1/inventory/items", {}),
+        asoraGetJson("/v1/ledger/events", {}),
+      ]);
 
       const invItems = normalizeInventoryItemsPayload(invR);
       const iMap = new Map();
@@ -120,7 +146,25 @@ export default function InventoryReconciliationPage() {
     return out;
   }, [invMap, ledgerMap, focus]);
 
-  const mismatchCount = useMemo(() => rows.filter((r) => r.mismatch).length, [rows]);
+  const mismatchRows = useMemo(() => rows.filter((r) => r.mismatch), [rows]);
+  const mismatchCount = mismatchRows.length;
+
+  function exportMismatchesCsv() {
+    const now = new Date();
+    const ts = now.toISOString().replace(/[:.]/g, "-");
+    const focusSuffix = focus ? `_${focus}` : "";
+    const filename = `asora_reconciliation_mismatches${focusSuffix}_${ts}.csv`;
+
+    const header = ["itemId", "inventoryQty", "ledgerDerivedQty", "status"];
+    const data = mismatchRows.map((r) => [
+      r.itemId,
+      typeof r.invQty === "number" ? r.invQty : "",
+      typeof r.ledQty === "number" ? r.ledQty : "",
+      "MISMATCH",
+    ]);
+
+    downloadCsv(filename, header, data);
+  }
 
   const s = isCompact ? compact : styles;
 
@@ -151,8 +195,18 @@ export default function InventoryReconciliationPage() {
               placeholder="e.g. ITEM-123"
             />
           </label>
+
           <button style={s.button} onClick={load} disabled={loading}>
             {loading ? "Refreshing..." : "Refresh"}
+          </button>
+
+          <button
+            style={s.buttonSecondary}
+            onClick={exportMismatchesCsv}
+            disabled={mismatchRows.length === 0}
+            title={mismatchRows.length === 0 ? "No mismatches to export." : "Export mismatches only."}
+          >
+            Export mismatches CSV
           </button>
 
           {focus ? (
@@ -227,8 +281,8 @@ export default function InventoryReconciliationPage() {
         <div style={s.noteTitle}>Notes</div>
         <ul style={s.ul}>
           <li>URL itemId overrides saved focus and will be persisted.</li>
+          <li>Export emits mismatches only, respecting the current focus filter.</li>
           <li>Inventory quantity extraction is best-effort and explicitly non-authoritative.</li>
-          <li>All derivation and mismatch signaling is client-side and read-only.</li>
         </ul>
       </section>
     </main>
@@ -246,7 +300,28 @@ const styles = {
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
   label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
   input: { width: 320, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
-  button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
+
+  button: {
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #111",
+    background: "#111",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: 13,
+    height: 34,
+  },
+  buttonSecondary: {
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #bbb",
+    background: "#fff",
+    color: "#111",
+    cursor: "pointer",
+    fontSize: 13,
+    height: 34,
+  },
+
   quickLinks: { fontSize: 13, paddingBottom: 2, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
   dot: { color: "#999" },
   meta: { fontSize: 13, color: "#444", paddingBottom: 2 },
@@ -285,7 +360,9 @@ const compact = {
   card: { ...styles.card, padding: 12, marginBottom: 12 },
   label: { ...styles.label, fontSize: 12 },
   input: { ...styles.input, padding: "6px 8px", fontSize: 12 },
+
   button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
+  buttonSecondary: { ...styles.buttonSecondary, padding: "6px 10px", fontSize: 12, height: 30 },
 
   quickLinks: { ...styles.quickLinks, fontSize: 12 },
   meta: { ...styles.meta, fontSize: 12 },
