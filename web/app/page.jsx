@@ -29,6 +29,9 @@ export default function HomePage() {
           <Link style={styles.link} href="/inventory/item">
             Item Drill-Down
           </Link>
+          <Link style={styles.link} href="/inventory/anomalies">
+            Inventory Anomalies
+          </Link>
         </div>
       </section>
 
