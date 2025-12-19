@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
+import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 
 export const runtime = "edge";
 
@@ -36,6 +37,8 @@ function normalizeInventoryItemsPayload(r) {
 }
 
 export default function InventoryReconciliationPage() {
+  const { isCompact } = useDensity();
+
   const sp = useSearchParams();
   const initialFocus = sp?.get("itemId") || "";
 
@@ -106,91 +109,93 @@ export default function InventoryReconciliationPage() {
   }, [invMap, ledgerMap, focusItemId]);
 
   const mismatchCount = useMemo(() => rows.filter((r) => r.mismatch).length, [rows]);
+  const focus = (focusItemId || "").trim();
+
+  const s = isCompact ? compact : styles;
 
   return (
-    <main style={styles.shell}>
-      <header style={styles.topbar}>
-        <div style={styles.brandRow}>
-          <div style={styles.brand}>Asora</div>
-          <div style={styles.nav}>
-            <Link href="/" style={styles.navLink}>
-              Home
-            </Link>
-            <span style={styles.navSep}>/</span>
-            <Link href="/inventory/items" style={styles.navLink}>
-              Inventory Items
-            </Link>
-          </div>
-        </div>
-      </header>
+    <main style={s.shell}>
+      <CompactBar here="Reconciliation" />
 
-      <header style={styles.header}>
-        <div style={styles.title}>Ledger ↔ Inventory Reconciliation</div>
-        <div style={styles.sub}>
+      <header style={s.header}>
+        <div style={s.title}>Ledger ↔ Inventory Reconciliation</div>
+        <div style={s.sub}>
           Side-by-side comparison between inventory read quantity (best-effort) and ledger-derived quantity. No
           assumptions about which side is correct.
         </div>
       </header>
 
-      <section style={styles.card}>
-        <div style={styles.controls}>
-          <label style={styles.label}>
+      <section style={s.card}>
+        <div style={s.controls}>
+          <label style={s.label}>
             Focus itemId (optional)
             <input
-              style={styles.input}
+              style={s.input}
               value={focusItemId}
               onChange={(e) => setFocusItemId(e.target.value)}
               placeholder="e.g. ITEM-123"
             />
           </label>
-          <button style={styles.button} onClick={load} disabled={loading}>
+          <button style={s.button} onClick={load} disabled={loading}>
             {loading ? "Refreshing..." : "Refresh"}
           </button>
-          <div style={styles.meta}>
-            Rows: <span style={styles.mono}>{rows.length}</span> | Mismatches:{" "}
-            <span style={styles.mono}>{mismatchCount}</span>
+
+          {focus ? (
+            <div style={s.quickLinks}>
+              <Link style={s.link} href={itemHref(focus)}>
+                Drill-down for {focus}
+              </Link>
+              <span style={s.dot}>·</span>
+              <Link style={s.linkSecondary} href={movementsHref(focus)}>
+                Movements for {focus}
+              </Link>
+            </div>
+          ) : null}
+
+          <div style={s.meta}>
+            Rows: <span style={s.mono}>{rows.length}</span> | Mismatches: <span style={s.mono}>{mismatchCount}</span>
           </div>
         </div>
 
-        {err ? <div style={styles.err}>Error: {err}</div> : null}
-        {rows.length === 0 && !loading ? <div style={styles.empty}>No reconciliation rows to display.</div> : null}
+        {err ? <div style={s.err}>Error: {err}</div> : null}
+        {rows.length === 0 && !loading ? <div style={s.empty}>No reconciliation rows to display.</div> : null}
 
-        <div style={styles.tableWrap}>
-          <table style={styles.table}>
+        <div style={s.tableWrap}>
+          <table style={s.table}>
             <thead>
               <tr>
-                <th style={styles.th}>itemId</th>
-                <th style={styles.thRight}>inventoryQty</th>
-                <th style={styles.thRight}>ledgerDerivedQty</th>
-                <th style={styles.th}>status</th>
-                <th style={styles.th}>Links</th>
+                <th style={s.th}>itemId</th>
+                <th style={s.thRight}>inventoryQty</th>
+                <th style={s.thRight}>ledgerDerivedQty</th>
+                <th style={s.th}>status</th>
+                <th style={s.th}>Links</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => {
                 const status = r.mismatch ? "MISMATCH" : "OK";
-                const statusStyle = r.mismatch ? styles.badgeBad : styles.badgeOk;
+                const statusStyle = r.mismatch ? s.badgeBad : s.badgeOk;
 
                 return (
                   <tr key={r.itemId}>
-                    <td style={styles.td}>
-                      <span style={styles.mono}>{r.itemId}</span>
+                    <td style={s.td}>
+                      <span style={s.mono}>{r.itemId}</span>
                     </td>
-                    <td style={styles.tdRight}>
-                      <span style={styles.mono}>{typeof r.invQty === "number" ? r.invQty : "—"}</span>
+                    <td style={s.tdRight}>
+                      <span style={s.mono}>{typeof r.invQty === "number" ? r.invQty : "—"}</span>
                     </td>
-                    <td style={styles.tdRight}>
-                      <span style={styles.mono}>{typeof r.ledQty === "number" ? r.ledQty : "—"}</span>
+                    <td style={s.tdRight}>
+                      <span style={s.mono}>{typeof r.ledQty === "number" ? r.ledQty : "—"}</span>
                     </td>
-                    <td style={styles.td}>
-                      <span style={{ ...styles.badge, ...statusStyle }}>{status}</span>
+                    <td style={s.td}>
+                      <span style={{ ...s.badge, ...statusStyle }}>{status}</span>
                     </td>
-                    <td style={styles.td}>
-                      <div style={styles.linkRow}>
-                        <Link style={styles.link} href={itemHref(r.itemId)}>
+                    <td style={s.td}>
+                      <div style={s.linkRow}>
+                        <Link style={s.link} href={itemHref(r.itemId)}>
                           Drill-down
                         </Link>
-                        <Link style={styles.linkSecondary} href={movementsHref(r.itemId)}>
+                        <Link style={s.linkSecondary} href={movementsHref(r.itemId)}>
                           Movements
                         </Link>
                       </div>
@@ -203,9 +208,9 @@ export default function InventoryReconciliationPage() {
         </div>
       </section>
 
-      <section style={styles.card}>
-        <div style={styles.noteTitle}>Notes</div>
-        <ul style={styles.ul}>
+      <section style={s.card}>
+        <div style={s.noteTitle}>Notes</div>
+        <ul style={s.ul}>
           <li>Query parameter support: /inventory/reconciliation?itemId=… filters to a single itemId.</li>
           <li>Inventory quantity extraction is best-effort and explicitly non-authoritative.</li>
           <li>All derivation and mismatch signaling is client-side and read-only.</li>
@@ -218,13 +223,6 @@ export default function InventoryReconciliationPage() {
 const styles = {
   shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
 
-  topbar: { marginBottom: 14 },
-  brandRow: { display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 10 },
-  brand: { fontSize: 16, fontWeight: 800, letterSpacing: 0.2 },
-  nav: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-  navLink: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
-  navSep: { color: "#999", fontSize: 13 },
-
   header: { marginBottom: 16 },
   title: { fontSize: 22, fontWeight: 700 },
   sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
@@ -233,16 +231,9 @@ const styles = {
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
   label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
   input: { width: 320, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
-  button: {
-    padding: "8px 12px",
-    borderRadius: 10,
-    border: "1px solid #111",
-    background: "#111",
-    color: "#fff",
-    cursor: "pointer",
-    fontSize: 13,
-    height: 34,
-  },
+  button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
+  quickLinks: { fontSize: 13, paddingBottom: 2, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  dot: { color: "#999" },
   meta: { fontSize: 13, color: "#444", paddingBottom: 2 },
 
   err: { marginTop: 10, color: "#b00020", fontSize: 13 },
@@ -255,8 +246,6 @@ const styles = {
   td: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, verticalAlign: "top" },
   tdRight: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, textAlign: "right", verticalAlign: "top" },
 
-  mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
-
   badge: { display: "inline-block", padding: "2px 8px", borderRadius: 999, fontSize: 12, border: "1px solid #ddd" },
   badgeOk: { background: "#f2f8f2", borderColor: "#cfe7cf", color: "#145a14" },
   badgeBad: { background: "#fff3f3", borderColor: "#f1c2c2", color: "#8a1f1f" },
@@ -265,6 +254,40 @@ const styles = {
   link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
   linkSecondary: { color: "#444", textDecoration: "none", fontSize: 13 },
 
+  mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+
   noteTitle: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
   ul: { margin: 0, paddingLeft: 18, color: "#333", fontSize: 13, lineHeight: 1.5 },
+};
+
+const compact = {
+  ...styles,
+  shell: { ...styles.shell, padding: 14 },
+  header: { marginBottom: 10 },
+  title: { fontSize: 18, fontWeight: 750 },
+  sub: { ...styles.sub, fontSize: 12 },
+
+  card: { ...styles.card, padding: 12, marginBottom: 12 },
+  label: { ...styles.label, fontSize: 12 },
+  input: { ...styles.input, padding: "6px 8px", fontSize: 12 },
+  button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
+
+  quickLinks: { ...styles.quickLinks, fontSize: 12 },
+  meta: { ...styles.meta, fontSize: 12 },
+
+  err: { ...styles.err, fontSize: 12 },
+  empty: { ...styles.empty, fontSize: 12 },
+
+  th: { ...styles.th, padding: "8px 6px", fontSize: 11 },
+  thRight: { ...styles.thRight, padding: "8px 6px", fontSize: 11 },
+  td: { ...styles.td, padding: "8px 6px", fontSize: 12 },
+  tdRight: { ...styles.tdRight, padding: "8px 6px", fontSize: 12 },
+
+  badge: { ...styles.badge, fontSize: 11, padding: "2px 7px" },
+
+  link: { ...styles.link, fontSize: 12 },
+  linkSecondary: { ...styles.linkSecondary, fontSize: 12 },
+
+  noteTitle: { ...styles.noteTitle, fontSize: 13 },
+  ul: { ...styles.ul, fontSize: 12 },
 };
