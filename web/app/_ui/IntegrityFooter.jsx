@@ -1,30 +1,77 @@
-export default function IntegrityFooter({ processedCount, skippedCount, skippedReasons, renderUtc }) {
+// web/app/_ui/IntegrityFooter.jsx
+"use client";
+
+export default function IntegrityFooter({
+  eventsProcessed = 0,
+  skipped = [], // [{ reason: string, count: number }]
+  renderUtc = "",
+}) {
+  const sorted = [...(skipped || [])].sort((a, b) => String(a.reason).localeCompare(String(b.reason)));
+
   return (
-    <footer style={styles.footer}>
-      <div style={styles.line}>
-        <b>Integrity:</b> processed <span style={styles.mono}>{processedCount ?? "—"}</span> · skipped{" "}
-        <span style={styles.mono}>{skippedCount ?? "—"}</span>
+    <footer style={styles.wrap}>
+      <div style={styles.title}>Integrity</div>
+
+      <div style={styles.row}>
+        <div style={styles.k}>Ledger events processed</div>
+        <div style={styles.vMono}>{Number(eventsProcessed) || 0}</div>
       </div>
 
-      {Array.isArray(skippedReasons) && skippedReasons.length > 0 ? (
-        <ul style={styles.ul}>
-          {skippedReasons.map((r, i) => (
-            <li key={i}>{r}</li>
-          ))}
-        </ul>
-      ) : null}
+      <div style={styles.row}>
+        <div style={styles.k}>Skipped</div>
+        <div style={styles.v}>
+          {sorted.length === 0 ? (
+            <span style={styles.vMono}>0</span>
+          ) : (
+            <ul style={styles.ul}>
+              {sorted.map((s) => (
+                <li key={s.reason} style={styles.li}>
+                  <span style={styles.vMono}>{Number(s.count) || 0}</span>{" "}
+                  <span style={styles.muted}>—</span> {String(s.reason)}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
 
-      <div style={styles.meta}>
-        Deterministic read-only derivation · Rendered <span style={styles.mono}>{renderUtc || "—"}</span> UTC
+      <div style={styles.row}>
+        <div style={styles.k}>Determinism</div>
+        <div style={styles.v}>
+          Static view. Read-only. Client-side derivation only. No writes. UTC timestamps. Deterministic sorting keys applied.
+        </div>
+      </div>
+
+      <div style={styles.row}>
+        <div style={styles.k}>Rendered (UTC)</div>
+        <div style={styles.vMono}>{renderUtc || "—"}</div>
       </div>
     </footer>
   );
 }
 
 const styles = {
-  footer: { marginTop: 18, paddingTop: 12, borderTop: "1px solid rgba(0,0,0,0.08)", fontSize: 12, opacity: 0.9 },
-  line: { marginBottom: 6 },
-  ul: { margin: "6px 0 0 0", paddingLeft: 18, lineHeight: 1.5 },
-  meta: { marginTop: 6, opacity: 0.8 },
-  mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+  wrap: {
+    maxWidth: 1200,
+    margin: "0 auto 24px auto",
+    padding: 14,
+    borderRadius: 14,
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: "rgba(255,255,255,0.03)",
+    color: "#e6edf3",
+  },
+  title: { fontSize: 13, fontWeight: 850, marginBottom: 10, opacity: 0.95 },
+  row: {
+    display: "grid",
+    gridTemplateColumns: "220px 1fr",
+    gap: 10,
+    padding: "8px 0",
+    borderTop: "1px solid rgba(255,255,255,0.08)",
+  },
+  k: { fontSize: 12, opacity: 0.75 },
+  v: { fontSize: 12, opacity: 0.92, lineHeight: 1.35 },
+  vMono: { fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+  muted: { opacity: 0.6 },
+  ul: { margin: 0, paddingLeft: 18 },
+  li: { margin: "2px 0" },
 };
