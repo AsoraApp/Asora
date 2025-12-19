@@ -2,56 +2,35 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 import { usePersistedString } from "../_ui/useViewState.jsx";
+import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
+import SavedViewsBar from "@/app/ui/SavedViewsBar";
 
 export const runtime = "edge";
 
 const STORE_KEY = "asora_view:reconciliation:itemId";
+const SAVED_VIEWS_KEY = "asora_saved_views:reconciliation:itemId";
 
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
 }
-
 function movementsHref(itemId) {
   return `/inventory/movements?itemId=${encodeURIComponent(String(itemId))}`;
 }
 
-function normalizeInventoryItemsPayload(r) {
-  const candidates = [];
-  const rootItems = Array.isArray(r?.items) ? r.items : null;
-  if (rootItems) candidates.push(...rootItems);
-
-  const nestedItems = Array.isArray(r?.data?.items) ? r.data.items : null;
-  if (nestedItems) candidates.push(...nestedItems);
-
-  const out = [];
-  for (const it of candidates) {
-    if (!it || typeof it !== "object") continue;
-    const itemId = it.itemId;
-    const qty = it.quantity;
-    if (typeof itemId !== "string" || itemId.trim() === "") continue;
-    if (typeof qty !== "number" || Number.isNaN(qty) || !Number.isFinite(qty)) continue;
-    out.push({ itemId, quantity: qty });
-  }
-  return out;
-}
-
 function csvEscape(v) {
   const s = String(v ?? "");
-  if (s.includes('"') || s.includes(",") || s.includes("\n") || s.includes("\r")) {
+  if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
     return `"${s.replace(/"/g, '""')}"`;
   }
   return s;
 }
 
-function downloadCsv(filename, header, rows) {
-  const lines = [];
-  lines.push(header.map(csvEscape).join(","));
-  for (const r of rows) lines.push(r.map(csvEscape).join(","));
-  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+function downloadCsv(filename, rows) {
+  const content = rows.map((r) => r.join(",")).join("\n") + "\n";
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -64,170 +43,205 @@ function downloadCsv(filename, header, rows) {
 
 export default function InventoryReconciliationPage() {
   const { isCompact } = useDensity();
-
-  const sp = useSearchParams();
-  const qpItemId = sp?.get("itemId") || "";
-
-  const [persistedFocus, setPersistedFocus] = usePersistedString(STORE_KEY, "");
-  const [focusItemId, setFocusItemId] = useState(qpItemId || persistedFocus);
-
-  // If URL itemId changes, adopt it and persist it.
-  useEffect(() => {
-    if (qpItemId && qpItemId !== focusItemId) {
-      setFocusItemId(qpItemId);
-      setPersistedFocus(qpItemId);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qpItemId]);
+  const s = isCompact ? compact : styles;
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [invMap, setInvMap] = useState(new Map());
-  const [ledgerMap, setLedgerMap] = useState(new Map());
 
-  async function load() {
+  const [persistedItemId, setPersistedItemId] = usePersistedString(STORE_KEY, "");
+  const [filterItemId, setFilterItemId] = useState(persistedItemId);
+
+  const [items, setItems] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [computedAtUtc, setComputedAtUtc] = useState("");
+
+  async function load({ force = false } = {}) {
     setLoading(true);
     setErr("");
     try {
-      const [invR, ledR] = await Promise.all([
-        asoraGetJson("/v1/inventory/items", {}),
-        asoraGetJson("/v1/ledger/events", {}),
-      ]);
+      if (force) clearLedgerCache();
 
-      const invItems = normalizeInventoryItemsPayload(invR);
-      const iMap = new Map();
-      for (const it of invItems) iMap.set(it.itemId, it.quantity);
+      // Inventory items (GET-only)
+      const inv = await asoraGetJson("/v1/inventory/items", {});
+      const invItems = Array.isArray(inv?.items) ? inv.items : [];
+      setItems(invItems);
 
-      const events = Array.isArray(ledR?.events) ? ledR.events : [];
-      const lMap = new Map();
-      for (const e of events) {
-        if (!e || typeof e !== "object") continue;
-        const itemId = e.itemId;
-        const q = e.qtyDelta;
-        if (typeof itemId !== "string" || itemId.trim() === "") continue;
-        if (typeof q !== "number" || Number.isNaN(q) || !Number.isFinite(q)) continue;
-        lMap.set(itemId, (lMap.get(itemId) || 0) + q);
-      }
+      // Ledger events (cached per tab)
+      const led = await getLedgerEventsCached(asoraGetJson);
+      const list = Array.isArray(led?.events) ? led.events : [];
 
-      setInvMap(iMap);
-      setLedgerMap(lMap);
+      // Deterministic sort: ts asc, then id
+      const sorted = [...list].sort((a, b) => {
+        const ta = typeof a?.ts === "string" ? a.ts : "";
+        const tb = typeof b?.ts === "string" ? b.ts : "";
+        if (ta < tb) return -1;
+        if (ta > tb) return 1;
+        const ia = typeof a?.id === "string" ? a.id : "";
+        const ib = typeof b?.id === "string" ? b.id : "";
+        return ia.localeCompare(ib);
+      });
+
+      setEvents(sorted);
+
+      // Render-only stamp (UTC string if backend provided; otherwise “now” from event ts max is not reliable)
+      // We keep this simple: show client-side UTC timestamp label.
+      const now = new Date();
+      setComputedAtUtc(now.toISOString());
     } catch (e) {
-      setErr(e?.message || "Failed to load inventory and/or ledger data.");
-      setInvMap(new Map());
-      setLedgerMap(new Map());
+      setErr(e?.message || "Failed to load inventory and ledger.");
+      setItems([]);
+      setEvents([]);
+      setComputedAtUtc("");
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    load();
+    load({ force: false });
   }, []);
 
-  const focus = (focusItemId || "").trim();
+  const focus = (filterItemId || "").trim();
+
+  const inventoryById = useMemo(() => {
+    const m = new Map();
+    for (const it of items) {
+      const id = typeof it?.id === "string" ? it.id : "";
+      if (!id) continue;
+      const q = it?.qty;
+      const qty = typeof q === "number" && Number.isFinite(q) ? q : 0;
+      m.set(id, qty);
+    }
+    return m;
+  }, [items]);
+
+  const ledgerDerivedById = useMemo(() => {
+    const m = new Map();
+    for (const e of events) {
+      const id = typeof e?.itemId === "string" ? e.itemId : "";
+      if (!id) continue;
+      const q = e?.qtyDelta;
+      if (typeof q !== "number" || !Number.isFinite(q)) continue;
+      m.set(id, (m.get(id) || 0) + q);
+    }
+    return m;
+  }, [events]);
 
   const rows = useMemo(() => {
+    // Union of ids, deterministic sort by itemId
     const ids = new Set();
-    for (const k of invMap.keys()) ids.add(k);
-    for (const k of ledgerMap.keys()) ids.add(k);
+    for (const k of inventoryById.keys()) ids.add(k);
+    for (const k of ledgerDerivedById.keys()) ids.add(k);
 
-    let out = Array.from(ids)
-      .map((itemId) => {
-        const invQty = invMap.has(itemId) ? invMap.get(itemId) : null;
-        const ledQty = ledgerMap.has(itemId) ? ledgerMap.get(itemId) : null;
-        const mismatch =
-          typeof invQty === "number" && typeof ledQty === "number" ? invQty !== ledQty : invQty !== ledQty;
-        return { itemId, invQty, ledQty, mismatch };
-      })
-      .sort((a, b) => a.itemId.localeCompare(b.itemId));
+    const list = Array.from(ids).sort((a, b) => a.localeCompare(b));
 
-    if (focus) out = out.filter((r) => r.itemId === focus);
+    const out = list.map((id) => {
+      const hasInv = inventoryById.has(id);
+      const hasLed = ledgerDerivedById.has(id);
+      const invQty = hasInv ? inventoryById.get(id) : null;
+      const ledQty = hasLed ? ledgerDerivedById.get(id) : null;
+
+      let status = "MATCH";
+      if (!hasInv && hasLed) status = "MISSING_INVENTORY";
+      else if (hasInv && !hasLed) status = "MISSING_LEDGER";
+      else if (hasInv && hasLed && invQty !== ledQty) status = "MISMATCH";
+
+      return {
+        itemId: id,
+        inventoryQty: invQty,
+        ledgerDerivedQty: ledQty,
+        status,
+      };
+    });
 
     return out;
-  }, [invMap, ledgerMap, focus]);
+  }, [inventoryById, ledgerDerivedById]);
 
-  const mismatchRows = useMemo(() => rows.filter((r) => r.mismatch), [rows]);
-  const mismatchCount = mismatchRows.length;
+  const filtered = useMemo(() => {
+    if (!focus) return rows;
+    // Exact match only (deterministic, no fuzzy search)
+    return rows.filter((r) => r.itemId === focus);
+  }, [rows, focus]);
+
+  const mismatchesOnly = useMemo(() => filtered.filter((r) => r.status !== "MATCH"), [filtered]);
 
   function exportMismatchesCsv() {
-    const now = new Date();
-    const ts = now.toISOString().replace(/[:.]/g, "-");
-    const focusSuffix = focus ? `_${focus}` : "";
-    const filename = `asora_reconciliation_mismatches${focusSuffix}_${ts}.csv`;
-
-    const header = ["itemId", "inventoryQty", "ledgerDerivedQty", "status"];
-    const data = mismatchRows.map((r) => [
-      r.itemId,
-      typeof r.invQty === "number" ? r.invQty : "",
-      typeof r.ledQty === "number" ? r.ledQty : "",
-      "MISMATCH",
+    const header = ["itemId", "inventoryQty", "ledgerDerivedQty", "status"].map(csvEscape);
+    const body = mismatchesOnly.map((r) => [
+      csvEscape(r.itemId),
+      csvEscape(r.inventoryQty === null ? "" : String(r.inventoryQty)),
+      csvEscape(r.ledgerDerivedQty === null ? "" : String(r.ledgerDerivedQty)),
+      csvEscape(r.status),
     ]);
-
-    downloadCsv(filename, header, data);
+    const safe = (focus || "all").replace(/[^a-zA-Z0-9_-]/g, "_");
+    downloadCsv(`asora_reconciliation_mismatches_${safe}.csv`, [header, ...body]);
   }
 
-  const s = isCompact ? compact : styles;
+  function applySaved(value) {
+    const v = (value || "").trim();
+    setFilterItemId(v);
+    setPersistedItemId(v);
+  }
 
   return (
     <main style={s.shell}>
       <CompactBar here="Reconciliation" />
 
       <header style={s.header}>
-        <div style={s.title}>Ledger ↔ Inventory Reconciliation</div>
+        <div style={s.title}>Inventory Reconciliation</div>
         <div style={s.sub}>
-          Side-by-side comparison between inventory read quantity (best-effort) and ledger-derived quantity. Focus is
-          saved locally.
+          Compares inventory quantities to ledger-derived totals (read-only). Deterministic union by itemId. Uses cached
+          ledger fetch per tab.
         </div>
       </header>
 
       <section style={s.card}>
         <div style={s.controls}>
           <label style={s.label}>
-            Focus itemId (optional)
+            Focus itemId (exact)
             <input
               style={s.input}
-              value={focusItemId}
+              value={filterItemId}
               onChange={(e) => {
                 const v = e.target.value;
-                setFocusItemId(v);
-                setPersistedFocus(v);
+                setFilterItemId(v);
+                setPersistedItemId(v);
               }}
               placeholder="e.g. ITEM-123"
             />
           </label>
 
-          <button style={s.button} onClick={load} disabled={loading}>
-            {loading ? "Refreshing..." : "Refresh"}
+          <button style={s.button} onClick={() => load({ force: false })} disabled={loading}>
+            {loading ? "Recomputing..." : "Recompute (cached)"}
           </button>
 
-          <button
-            style={s.buttonSecondary}
-            onClick={exportMismatchesCsv}
-            disabled={mismatchRows.length === 0}
-            title={mismatchRows.length === 0 ? "No mismatches to export." : "Export mismatches only."}
-          >
+          <button style={s.buttonSecondary} onClick={() => load({ force: true })} disabled={loading}>
+            Recompute (force)
+          </button>
+
+          <button style={s.buttonSecondary} onClick={exportMismatchesCsv} disabled={loading || mismatchesOnly.length === 0}>
             Export mismatches CSV
           </button>
 
-          {focus ? (
-            <div style={s.quickLinks}>
-              <Link style={s.link} href={itemHref(focus)}>
-                Drill-down for {focus}
-              </Link>
-              <span style={s.dot}>·</span>
-              <Link style={s.linkSecondary} href={movementsHref(focus)}>
-                Movements for {focus}
-              </Link>
-            </div>
-          ) : null}
-
           <div style={s.meta}>
-            Rows: <span style={s.mono}>{rows.length}</span> | Mismatches: <span style={s.mono}>{mismatchCount}</span>
+            Rows: <span style={s.mono}>{rows.length}</span> | Focus rows: <span style={s.mono}>{filtered.length}</span> | Mismatches:{" "}
+            <span style={s.mono}>{mismatchesOnly.length}</span>
+            {computedAtUtc ? (
+              <>
+                {" "}
+                | Computed at (UTC): <span style={s.mono}>{computedAtUtc}</span>
+              </>
+            ) : null}
           </div>
         </div>
 
+        {/* Saved Views */}
+        <div style={{ marginTop: 12 }}>
+          <SavedViewsBar storageKey={SAVED_VIEWS_KEY} valueLabel="itemId" currentValue={focus} onApply={applySaved} />
+        </div>
+
         {err ? <div style={s.err}>Error: {err}</div> : null}
-        {rows.length === 0 && !loading ? <div style={s.empty}>No reconciliation rows to display.</div> : null}
+        {rows.length === 0 && !loading ? <div style={s.empty}>No data to reconcile.</div> : null}
 
         <div style={s.tableWrap}>
           <table style={s.table}>
@@ -241,33 +255,29 @@ export default function InventoryReconciliationPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
-                const status = r.mismatch ? "MISMATCH" : "OK";
-                const statusStyle = r.mismatch ? s.badgeBad : s.badgeOk;
-
+              {filtered.map((r) => {
+                const key = r.itemId;
+                const isMismatch = r.status !== "MATCH";
                 return (
-                  <tr key={r.itemId}>
+                  <tr key={key}>
                     <td style={s.td}>
                       <span style={s.mono}>{r.itemId}</span>
                     </td>
                     <td style={s.tdRight}>
-                      <span style={s.mono}>{typeof r.invQty === "number" ? r.invQty : "—"}</span>
+                      <span style={s.mono}>{r.inventoryQty === null ? "—" : r.inventoryQty}</span>
                     </td>
                     <td style={s.tdRight}>
-                      <span style={s.mono}>{typeof r.ledQty === "number" ? r.ledQty : "—"}</span>
+                      <span style={s.mono}>{r.ledgerDerivedQty === null ? "—" : r.ledgerDerivedQty}</span>
                     </td>
+                    <td style={{ ...s.td, ...(isMismatch ? s.bad : null) }}>{r.status}</td>
                     <td style={s.td}>
-                      <span style={{ ...s.badge, ...statusStyle }}>{status}</span>
-                    </td>
-                    <td style={s.td}>
-                      <div style={s.linkRow}>
-                        <Link style={s.link} href={itemHref(r.itemId)}>
-                          Drill-down
-                        </Link>
-                        <Link style={s.linkSecondary} href={movementsHref(r.itemId)}>
-                          Movements
-                        </Link>
-                      </div>
+                      <Link style={s.link} href={itemHref(r.itemId)}>
+                        Drill-down
+                      </Link>
+                      <span style={s.muted}> · </span>
+                      <Link style={s.link} href={movementsHref(r.itemId)}>
+                        Movements
+                      </Link>
                     </td>
                   </tr>
                 );
@@ -280,9 +290,10 @@ export default function InventoryReconciliationPage() {
       <section style={s.card}>
         <div style={s.noteTitle}>Notes</div>
         <ul style={s.ul}>
-          <li>URL itemId overrides saved focus and will be persisted.</li>
-          <li>Export emits mismatches only, respecting the current focus filter.</li>
-          <li>Inventory quantity extraction is best-effort and explicitly non-authoritative.</li>
+          <li>Ledger-derived totals are computed by summing numeric qtyDelta by itemId (negative allowed).</li>
+          <li>Status meanings: MATCH, MISMATCH, MISSING_INVENTORY, MISSING_LEDGER.</li>
+          <li>Saved Views are local-only (localStorage) and do not affect backend behavior.</li>
+          <li>Deterministic ordering by itemId ascending.</li>
         </ul>
       </section>
     </main>
@@ -291,7 +302,6 @@ export default function InventoryReconciliationPage() {
 
 const styles = {
   shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
-
   header: { marginBottom: 16 },
   title: { fontSize: 22, fontWeight: 700 },
   sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
@@ -299,35 +309,12 @@ const styles = {
   card: { border: "1px solid #e5e5e5", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fff" },
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
   label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
-  input: { width: 320, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
+  input: { width: 280, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
 
-  button: {
-    padding: "8px 12px",
-    borderRadius: 10,
-    border: "1px solid #111",
-    background: "#111",
-    color: "#fff",
-    cursor: "pointer",
-    fontSize: 13,
-    height: 34,
-  },
-  buttonSecondary: {
-    padding: "8px 12px",
-    borderRadius: 10,
-    border: "1px solid #bbb",
-    background: "#fff",
-    color: "#111",
-    cursor: "pointer",
-    fontSize: 13,
-    height: 34,
-  },
+  button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
+  buttonSecondary: { padding: "8px 12px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", color: "#111", cursor: "pointer", fontSize: 13, height: 34 },
 
-  quickLinks: { fontSize: 13, paddingBottom: 2, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-  dot: { color: "#999" },
   meta: { fontSize: 13, color: "#444", paddingBottom: 2 },
-
-  err: { marginTop: 10, color: "#b00020", fontSize: 13 },
-  empty: { marginTop: 12, color: "#666", fontSize: 13 },
 
   tableWrap: { width: "100%", overflowX: "auto", marginTop: 12 },
   table: { borderCollapse: "collapse", width: "100%" },
@@ -336,15 +323,13 @@ const styles = {
   td: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, verticalAlign: "top" },
   tdRight: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, textAlign: "right", verticalAlign: "top" },
 
-  badge: { display: "inline-block", padding: "2px 8px", borderRadius: 999, fontSize: 12, border: "1px solid #ddd" },
-  badgeOk: { background: "#f2f8f2", borderColor: "#cfe7cf", color: "#145a14" },
-  badgeBad: { background: "#fff3f3", borderColor: "#f1c2c2", color: "#8a1f1f" },
-
-  linkRow: { display: "flex", gap: 10, flexWrap: "wrap" },
   link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
-  linkSecondary: { color: "#444", textDecoration: "none", fontSize: 13 },
-
+  muted: { color: "#777" },
   mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+
+  err: { marginTop: 10, color: "#b00020", fontSize: 13 },
+  empty: { marginTop: 12, color: "#666", fontSize: 13 },
+  bad: { color: "#b00020", fontWeight: 700 },
 
   noteTitle: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
   ul: { margin: 0, paddingLeft: 18, color: "#333", fontSize: 13, lineHeight: 1.5 },
@@ -364,21 +349,17 @@ const compact = {
   button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
   buttonSecondary: { ...styles.buttonSecondary, padding: "6px 10px", fontSize: 12, height: 30 },
 
-  quickLinks: { ...styles.quickLinks, fontSize: 12 },
   meta: { ...styles.meta, fontSize: 12 },
-
-  err: { ...styles.err, fontSize: 12 },
-  empty: { ...styles.empty, fontSize: 12 },
 
   th: { ...styles.th, padding: "8px 6px", fontSize: 11 },
   thRight: { ...styles.thRight, padding: "8px 6px", fontSize: 11 },
   td: { ...styles.td, padding: "8px 6px", fontSize: 12 },
   tdRight: { ...styles.tdRight, padding: "8px 6px", fontSize: 12 },
 
-  badge: { ...styles.badge, fontSize: 11, padding: "2px 7px" },
-
   link: { ...styles.link, fontSize: 12 },
-  linkSecondary: { ...styles.linkSecondary, fontSize: 12 },
+
+  err: { ...styles.err, fontSize: 12 },
+  empty: { ...styles.empty, fontSize: 12 },
 
   noteTitle: { ...styles.noteTitle, fontSize: 13 },
   ul: { ...styles.ul, fontSize: 12 },
