@@ -23,6 +23,9 @@ export default function HomePage() {
           <Link style={styles.link} href="/inventory/snapshot">
             Inventory Snapshot
           </Link>
+          <Link style={styles.link} href="/inventory/movements">
+            Inventory Movements
+          </Link>
         </div>
       </section>
 
