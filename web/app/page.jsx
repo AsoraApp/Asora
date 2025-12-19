@@ -32,6 +32,9 @@ export default function HomePage() {
           <Link style={styles.link} href="/inventory/anomalies">
             Inventory Anomalies
           </Link>
+          <Link style={styles.link} href="/inventory/reconciliation">
+            Inventory Reconciliation
+          </Link>
         </div>
       </section>
 
