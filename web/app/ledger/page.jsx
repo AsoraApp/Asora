@@ -1,6 +1,7 @@
 import Link from "next/link";
 import LedgerClient from "./ui/LedgerClient";
 
+export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
 export default function LedgerPage() {
