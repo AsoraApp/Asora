@@ -2,11 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { asoraGetJson } from "@/lib/asoraFetch";
+import { asoraGetJson, getStoredDevToken } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
-import { usePersistedString } from "../_ui/useViewState.jsx";
-import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
+import { clearLedgerCache, getLedgerEventsCached, getLedgerCacheInfo } from "@/lib/ledgerCache";
 import SavedViewsBar from "@/app/ui/SavedViewsBar";
+import AdminHeader from "../_ui/AdminHeader.jsx";
+import LedgerFreshnessBar from "../_ui/LedgerFreshnessBar.jsx";
+import IntegrityFooter from "../_ui/IntegrityFooter.jsx";
+import { rowsToCsv } from "../_ui/csv.js";
 
 export const runtime = "edge";
 
@@ -24,19 +27,8 @@ function movementsHref(itemId) {
   return `/inventory/movements?itemId=${encodeURIComponent(String(itemId))}`;
 }
 
-function csvEscape(v) {
-  const s = String(v ?? "");
-  if (s.includes('"') || s.includes(",") || s.includes("\n") || s.includes("\r")) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-  return s;
-}
-
-function downloadCsv(filename, header, rows) {
-  const lines = [];
-  lines.push(header.map(csvEscape).join(","));
-  for (const r of rows) lines.push(r.map(csvEscape).join(","));
-  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+function downloadText(filename, text, mime = "text/csv;charset=utf-8") {
+  const blob = new Blob([text], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -51,16 +43,37 @@ export default function InventorySnapshotPage() {
   const { isCompact } = useDensity();
   const s = isCompact ? compact : styles;
 
+  const tenantId = useMemo(() => (getStoredDevToken?.() || ""), []);
+
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [events, setEvents] = useState([]);
   const [computedAtUtc, setComputedAtUtc] = useState("");
 
   // Focus itemId (optional, persisted)
-  const [focusItemId, setFocusItemId] = usePersistedString(FOCUS_STORE_KEY, "");
+  const [focusItemId, setFocusItemId] = useState("");
 
   // Paging
   const [page, setPage] = useState(1);
+
+  // Freshness (ledger cache metadata)
+  const [freshness, setFreshness] = useState(() => getLedgerCacheInfo());
+
+  function readLocalFocus() {
+    try {
+      return localStorage.getItem(FOCUS_STORE_KEY) || "";
+    } catch {
+      return "";
+    }
+  }
+  function writeLocalFocus(v) {
+    try {
+      if (!v) localStorage.removeItem(FOCUS_STORE_KEY);
+      else localStorage.setItem(FOCUS_STORE_KEY, v);
+    } catch {
+      // ignore
+    }
+  }
 
   async function load({ force = false } = {}) {
     setLoading(true);
@@ -84,17 +97,24 @@ export default function InventorySnapshotPage() {
 
       setEvents(sorted);
       setComputedAtUtc(new Date().toISOString());
+      setFreshness(getLedgerCacheInfo());
     } catch (e) {
       setErr(e?.message || "Failed to load ledger events.");
       setEvents([]);
       setComputedAtUtc("");
+      setFreshness(getLedgerCacheInfo());
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
+    // hydrate persisted focus once
+    const v = readLocalFocus();
+    if (v) setFocusItemId(v);
+
     load({ force: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const focus = (focusItemId || "").trim();
@@ -155,25 +175,53 @@ export default function InventorySnapshotPage() {
     const safeFocus = focus ? `_focus_${focus.replace(/[^a-zA-Z0-9_-]/g, "_")}` : "";
     const filename = `asora_inventory_snapshot_${ts}${safeFocus}.csv`;
 
-    const header = ["itemId", "derivedQuantity"];
-    const rows = filteredRows.map((r) => [r.itemId, r.derivedQuantity]);
-    downloadCsv(filename, header, rows);
+    const columns = ["itemId", "derivedQuantity"];
+    const csv = rowsToCsv({ columns, rows: filteredRows });
+    downloadText(filename, csv);
   }
 
   function applySaved(value) {
     const v = (value || "").trim();
     setFocusItemId(v);
+    writeLocalFocus(v);
   }
+
+  function onFocusChange(v) {
+    setFocusItemId(v);
+    writeLocalFocus(v);
+  }
+
+  const cacheStatus = useMemo(() => {
+    if (freshness?.inFlight) return "in-flight";
+    if (freshness?.hasError) return "error";
+    if (freshness?.lastSource) return freshness.lastSource;
+    return freshness?.hasResult ? "cached" : "empty";
+  }, [freshness]);
 
   return (
     <main style={s.shell}>
+      <AdminHeader
+        title="Inventory Snapshot (Derived)"
+        subtitle="Derived on-hand state computed client-side from ledger events. This view stores nothing and performs no writes."
+        tenantId={tenantId}
+        freshnessBar={
+          <LedgerFreshnessBar
+            lastFetchedUtc={freshness?.lastFetchedUtc || ""}
+            cacheStatus={cacheStatus}
+            onRefresh={() => load({ force: false })}
+            onClearCache={() => {
+              clearLedgerCache();
+              setFreshness(getLedgerCacheInfo());
+            }}
+          />
+        }
+      />
+
       <CompactBar here="Snapshot" />
 
       <header style={s.header}>
-        <div style={s.title}>Inventory Snapshot (Derived)</div>
         <div style={s.sub}>
-          Derived on-hand state computed client-side from ledger events. This view stores nothing and performs no writes.
-          Ledger fetch is cached per tab.
+          Ledger fetch is cached per tab. Deterministic derivation: <b>ts asc</b>, then <b>id</b>.
         </div>
       </header>
 
@@ -196,7 +244,7 @@ export default function InventorySnapshotPage() {
             <input
               style={s.input}
               value={focusItemId}
-              onChange={(e) => setFocusItemId(e.target.value)}
+              onChange={(e) => onFocusChange(e.target.value)}
               placeholder="exact itemId (filters table)"
             />
           </label>
@@ -230,7 +278,9 @@ export default function InventorySnapshotPage() {
 
         {err ? <div style={s.err}>Error: {err}</div> : null}
         {filteredRows.length === 0 && !loading ? (
-          <div style={s.empty}>{focus ? "No derived rows for this focus itemId." : "No derived inventory rows to display."}</div>
+          <div style={s.empty}>
+            {focus ? "No derived rows for this focus itemId." : "No derived inventory rows to display."}
+          </div>
         ) : null}
 
         {filteredRows.length > 0 ? (
@@ -242,11 +292,7 @@ export default function InventorySnapshotPage() {
               Page <span style={s.mono}>{page}</span> / <span style={s.mono}>{pageCount}</span> (page size{" "}
               <span style={s.mono}>{PAGE_SIZE}</span>, showing <span style={s.mono}>{visible.length}</span>)
             </div>
-            <button
-              style={s.pagerBtn}
-              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-              disabled={page >= pageCount}
-            >
+            <button style={s.pagerBtn} onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount}>
               Next
             </button>
             <button
@@ -293,6 +339,16 @@ export default function InventorySnapshotPage() {
             </tbody>
           </table>
         </div>
+
+        <IntegrityFooter
+          processedCount={events.length}
+          skippedCount={derived.skippedMissingItemId + derived.skippedMissingQtyDelta}
+          skippedReasons={[
+            `Missing itemId: ${derived.skippedMissingItemId}`,
+            `Missing/non-numeric qtyDelta: ${derived.skippedMissingQtyDelta}`,
+          ]}
+          renderUtc={computedAtUtc}
+        />
       </section>
 
       <section style={s.card}>
@@ -311,9 +367,8 @@ export default function InventorySnapshotPage() {
 
 const styles = {
   shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
-  header: { marginBottom: 16 },
-  title: { fontSize: 22, fontWeight: 700 },
-  sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
+  header: { marginBottom: 10 },
+  sub: { color: "#555", fontSize: 13, lineHeight: 1.35 },
 
   card: { border: "1px solid #e5e5e5", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fff" },
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" },
@@ -355,7 +410,6 @@ const styles = {
 const compact = {
   ...styles,
   shell: { ...styles.shell, padding: 14 },
-  title: { fontSize: 18, fontWeight: 750 },
   sub: { ...styles.sub, fontSize: 12 },
   card: { ...styles.card, padding: 12, marginBottom: 12 },
 
