@@ -6,10 +6,12 @@ import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 import { usePersistedString } from "../_ui/useViewState.jsx";
+import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
 
 export const runtime = "edge";
 
 const STORE_KEY = "asora_view:movements:itemId";
+const PAGE_SIZE = 200;
 
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
@@ -29,22 +31,29 @@ export default function InventoryMovementsPage() {
   const [filterItemId, setFilterItemId] = useState(qpItemId || persistedItemId);
   const [events, setEvents] = useState([]);
 
+  // Deterministic paging state (reset when filter changes)
+  const [page, setPage] = useState(1);
+
   // If URL itemId changes, adopt it and persist it.
   useEffect(() => {
     if (qpItemId && qpItemId !== filterItemId) {
       setFilterItemId(qpItemId);
       setPersistedItemId(qpItemId);
+      setPage(1);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qpItemId]);
 
-  async function load() {
+  async function load({ force = false } = {}) {
     setLoading(true);
     setErr("");
     try {
-      const r = await asoraGetJson("/v1/ledger/events", {});
+      if (force) clearLedgerCache();
+
+      const r = await getLedgerEventsCached(asoraGetJson);
       const list = Array.isArray(r?.events) ? r.events : [];
 
+      // Deterministic sort: ts asc, then id
       const sorted = [...list].sort((a, b) => {
         const ta = typeof a?.ts === "string" ? a.ts : "";
         const tb = typeof b?.ts === "string" ? b.ts : "";
@@ -65,16 +74,28 @@ export default function InventoryMovementsPage() {
   }
 
   useEffect(() => {
-    load();
+    load({ force: false });
   }, []);
 
-  const filtered = useMemo(() => {
-    const item = (filterItemId || "").trim();
-    if (!item) return events;
-    return events.filter((e) => typeof e?.itemId === "string" && e.itemId === item);
-  }, [events, filterItemId]);
-
   const focus = (filterItemId || "").trim();
+
+  const filtered = useMemo(() => {
+    if (!focus) return events;
+    return events.filter((e) => typeof e?.itemId === "string" && e.itemId === focus);
+  }, [events, focus]);
+
+  // Reset paging when user types a different filter (local input)
+  useEffect(() => {
+    setPage(1);
+  }, [focus]);
+
+  const pageCount = useMemo(() => Math.max(1, Math.ceil(filtered.length / PAGE_SIZE)), [filtered.length]);
+
+  const visible = useMemo(() => {
+    const end = Math.min(filtered.length, page * PAGE_SIZE);
+    return filtered.slice(0, end);
+  }, [filtered, page]);
+
   const s = isCompact ? compact : styles;
 
   return (
@@ -83,7 +104,10 @@ export default function InventoryMovementsPage() {
 
       <header style={s.header}>
         <div style={s.title}>Inventory Movements</div>
-        <div style={s.sub}>Chronological, ledger-derived movement timeline (read-only). Filter is saved locally.</div>
+        <div style={s.sub}>
+          Chronological, ledger-derived movement timeline (read-only). Filter is saved locally. Ledger fetch is cached
+          per tab.
+        </div>
       </header>
 
       <section style={s.card}>
@@ -102,8 +126,12 @@ export default function InventoryMovementsPage() {
             />
           </label>
 
-          <button style={s.button} onClick={load} disabled={loading}>
-            {loading ? "Refreshing..." : "Refresh"}
+          <button style={s.button} onClick={() => load({ force: false })} disabled={loading}>
+            {loading ? "Refreshing..." : "Refresh (cached)"}
+          </button>
+
+          <button style={s.buttonSecondary} onClick={() => load({ force: true })} disabled={loading}>
+            Refresh (force)
           </button>
 
           {focus ? (
@@ -113,10 +141,45 @@ export default function InventoryMovementsPage() {
               </Link>
             </div>
           ) : null}
+
+          <div style={s.meta}>
+            Rows: <span style={s.mono}>{filtered.length}</span> | Showing:{" "}
+            <span style={s.mono}>{visible.length}</span> | Page size: <span style={s.mono}>{PAGE_SIZE}</span>
+          </div>
         </div>
 
         {err ? <div style={s.err}>Error: {err}</div> : null}
         {filtered.length === 0 && !loading ? <div style={s.empty}>No movements to display.</div> : null}
+
+        {filtered.length > 0 ? (
+          <div style={s.pagerRow}>
+            <button
+              style={s.pagerBtn}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+            >
+              Prev
+            </button>
+            <div style={s.pagerText}>
+              Page <span style={s.mono}>{page}</span> / <span style={s.mono}>{pageCount}</span>
+            </div>
+            <button
+              style={s.pagerBtn}
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              disabled={page >= pageCount}
+            >
+              Next
+            </button>
+            <button
+              style={s.pagerBtnSecondary}
+              onClick={() => setPage(pageCount)}
+              disabled={page >= pageCount}
+              title="Jump to last page"
+            >
+              End
+            </button>
+          </div>
+        ) : null}
 
         <div style={s.tableWrap}>
           <table style={s.table}>
@@ -130,7 +193,7 @@ export default function InventoryMovementsPage() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((e, idx) => {
+              {visible.map((e, idx) => {
                 const itemId = typeof e?.itemId === "string" ? e.itemId : "";
                 const q = e?.qtyDelta;
                 const neg = typeof q === "number" && q < 0;
@@ -143,7 +206,9 @@ export default function InventoryMovementsPage() {
                     <td style={s.td}>
                       <span style={s.mono}>{ts}</span>
                     </td>
-                    <td style={s.td}>{itemId ? <span style={s.mono}>{itemId}</span> : <span style={s.muted}>—</span>}</td>
+                    <td style={s.td}>
+                      {itemId ? <span style={s.mono}>{itemId}</span> : <span style={s.muted}>—</span>}
+                    </td>
                     <td style={{ ...s.tdRight, ...(neg ? s.neg : null) }}>
                       <span style={s.mono}>{typeof q === "number" ? q : "—"}</span>
                     </td>
@@ -169,7 +234,8 @@ export default function InventoryMovementsPage() {
         <div style={s.noteTitle}>Notes</div>
         <ul style={s.ul}>
           <li>Sorting is deterministic: ts ascending, then id as a tie-breaker if present.</li>
-          <li>URL itemId overrides saved filter and will be persisted.</li>
+          <li>Cached refresh avoids re-downloading ledger events across views in the same tab.</li>
+          <li>Force refresh explicitly clears the cache and re-fetches.</li>
         </ul>
       </section>
     </main>
@@ -186,18 +252,19 @@ const styles = {
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
   label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
   input: { width: 280, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
-  button: {
-    padding: "8px 12px",
-    borderRadius: 10,
-    border: "1px solid #111",
-    background: "#111",
-    color: "#fff",
-    cursor: "pointer",
-    fontSize: 13,
-    height: 34,
-  },
+
+  button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
+  buttonSecondary: { padding: "8px 12px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", color: "#111", cursor: "pointer", fontSize: 13, height: 34 },
+
   quickLinks: { fontSize: 13, paddingBottom: 2 },
   link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
+
+  meta: { fontSize: 13, color: "#444", paddingBottom: 2 },
+
+  pagerRow: { marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
+  pagerBtn: { padding: "6px 10px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", cursor: "pointer", fontSize: 13 },
+  pagerBtnSecondary: { padding: "6px 10px", borderRadius: 10, border: "1px solid #bbb", background: "#f7f7f7", cursor: "pointer", fontSize: 13 },
+  pagerText: { fontSize: 13, color: "#333" },
 
   err: { marginTop: 10, color: "#b00020", fontSize: 13 },
   empty: { marginTop: 12, color: "#666", fontSize: 13 },
@@ -208,6 +275,7 @@ const styles = {
   thRight: { textAlign: "right", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
   td: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, verticalAlign: "top" },
   tdRight: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, textAlign: "right", verticalAlign: "top" },
+
   neg: { color: "#b00020", fontWeight: 700 },
   muted: { color: "#777" },
   mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
@@ -226,7 +294,15 @@ const compact = {
   card: { ...styles.card, padding: 12, marginBottom: 12 },
   label: { ...styles.label, fontSize: 12 },
   input: { ...styles.input, padding: "6px 8px", fontSize: 12 },
+
   button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
+  buttonSecondary: { ...styles.buttonSecondary, padding: "6px 10px", fontSize: 12, height: 30 },
+
+  meta: { ...styles.meta, fontSize: 12 },
+
+  pagerBtn: { ...styles.pagerBtn, fontSize: 12 },
+  pagerBtnSecondary: { ...styles.pagerBtnSecondary, fontSize: 12 },
+  pagerText: { ...styles.pagerText, fontSize: 12 },
 
   err: { ...styles.err, fontSize: 12 },
   empty: { ...styles.empty, fontSize: 12 },
