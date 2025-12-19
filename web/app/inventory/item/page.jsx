@@ -38,7 +38,6 @@ export default function InventoryItemDrillDownPage() {
 
       const filtered = list.filter((e) => typeof e?.itemId === "string" && e.itemId === iid);
 
-      // Deterministic chronological order.
       const sorted = [...filtered].sort((a, b) => {
         const ta = typeof a?.ts === "string" ? a.ts : "";
         const tb = typeof b?.ts === "string" ? b.ts : "";
@@ -67,7 +66,6 @@ export default function InventoryItemDrillDownPage() {
   }
 
   useEffect(() => {
-    // Preload if itemId is supplied via query string
     if (initialItemId.trim()) load(initialItemId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -85,6 +83,21 @@ export default function InventoryItemDrillDownPage() {
 
   return (
     <main style={styles.shell}>
+      <header style={styles.topbar}>
+        <div style={styles.brandRow}>
+          <div style={styles.brand}>Asora</div>
+          <div style={styles.nav}>
+            <Link href="/" style={styles.navLink}>
+              Home
+            </Link>
+            <span style={styles.navSep}>/</span>
+            <Link href="/inventory/items" style={styles.navLink}>
+              Inventory Items
+            </Link>
+          </div>
+        </div>
+      </header>
+
       <header style={styles.header}>
         <div style={styles.title}>Item Drill-Down</div>
         <div style={styles.sub}>Ledger events affecting a single itemId (read-only; deterministic ordering).</div>
@@ -94,12 +107,7 @@ export default function InventoryItemDrillDownPage() {
         <div style={styles.controls}>
           <label style={styles.label}>
             itemId
-            <input
-              style={styles.input}
-              value={itemId}
-              onChange={(e) => setItemId(e.target.value)}
-              placeholder="Enter itemId"
-            />
+            <input style={styles.input} value={itemId} onChange={(e) => setItemId(e.target.value)} placeholder="Enter itemId" />
           </label>
           <button style={styles.button} onClick={() => load(itemId)} disabled={loading}>
             {loading ? "Loading..." : "Load"}
@@ -188,26 +196,22 @@ export default function InventoryItemDrillDownPage() {
 
 const styles = {
   shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
+
+  topbar: { marginBottom: 14 },
+  brandRow: { display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 10 },
+  brand: { fontSize: 16, fontWeight: 800, letterSpacing: 0.2 },
+  nav: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  navLink: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
+  navSep: { color: "#999", fontSize: 13 },
+
   header: { marginBottom: 16 },
   title: { fontSize: 22, fontWeight: 700 },
   sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
-  card: {
-    border: "1px solid #e5e5e5",
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
-    background: "#fff",
-  },
+
+  card: { border: "1px solid #e5e5e5", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fff" },
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
   label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
-  input: {
-    width: 320,
-    padding: "8px 10px",
-    borderRadius: 10,
-    border: "1px solid #ccc",
-    outline: "none",
-    fontSize: 13,
-  },
+  input: { width: 320, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
   button: {
     padding: "8px 12px",
     borderRadius: 10,
@@ -220,25 +224,23 @@ const styles = {
   },
   links: { fontSize: 13, paddingBottom: 2 },
   link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
+
   summaryRow: { marginTop: 12, display: "flex", gap: 14, flexWrap: "wrap", fontSize: 13, alignItems: "center" },
   err: { marginTop: 10, color: "#b00020", fontSize: 13 },
   empty: { marginTop: 12, color: "#666", fontSize: 13 },
+
   tableWrap: { width: "100%", overflowX: "auto", marginTop: 12 },
   table: { borderCollapse: "collapse", width: "100%" },
   th: { textAlign: "left", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
   thRight: { textAlign: "right", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
   td: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, verticalAlign: "top" },
-  tdRight: {
-    padding: "10px 8px",
-    borderBottom: "1px solid #f0f0f0",
-    fontSize: 13,
-    textAlign: "right",
-    verticalAlign: "top",
-  },
+  tdRight: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, textAlign: "right", verticalAlign: "top" },
   neg: { color: "#b00020", fontWeight: 700 },
   muted: { color: "#666" },
+
   mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
   monoSmall: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12 },
+
   noteTitle: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
   ul: { margin: 0, paddingLeft: 18, color: "#333", fontSize: 13, lineHeight: 1.5 },
 };
