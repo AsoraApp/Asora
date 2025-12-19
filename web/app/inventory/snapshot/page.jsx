@@ -16,7 +16,7 @@ export default function InventorySnapshotPage() {
       const r = await asoraGetJson("/v1/ledger/events", {});
       setEvents(Array.isArray(r?.events) ? r.events : []);
       setComputedAt(new Date().toISOString());
-    } catch (e) {
+    } catch {
       setError("Failed to load ledger events");
     } finally {
       setLoading(false);
@@ -32,7 +32,7 @@ export default function InventorySnapshotPage() {
     let skippedMissingItem = 0;
     let skippedMissingDelta = 0;
 
-    events.forEach((ev, idx) => {
+    events.forEach((ev) => {
       const itemId = ev?.itemId;
       const delta = ev?.qtyDelta;
 
@@ -62,6 +62,31 @@ export default function InventorySnapshotPage() {
     };
   }, [events]);
 
+  function exportCsv() {
+    if (!derived.rows.length) return;
+
+    const header = ["itemId", "derivedQuantity"];
+    const lines = derived.rows.map((r) =>
+      [r.itemId, r.quantity].join(",")
+    );
+
+    const csv =
+      header.join(",") +
+      "\n" +
+      lines.join("\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `inventory_snapshot_${computedAt || "unknown"}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <main style={styles.shell}>
       <header style={styles.header}>
@@ -74,15 +99,22 @@ export default function InventorySnapshotPage() {
       <section style={styles.card}>
         <div style={styles.meta}>
           <div>Computed at: {computedAt || "—"}</div>
-          <button onClick={load} style={styles.button} disabled={loading}>
-            Recompute
-          </button>
+          <div style={styles.actions}>
+            <button onClick={load} style={styles.button} disabled={loading}>
+              Recompute
+            </button>
+            <button
+              onClick={exportCsv}
+              style={styles.buttonSecondary}
+              disabled={!derived.rows.length}
+            >
+              Export CSV
+            </button>
+          </div>
         </div>
       </section>
 
-      {error && (
-        <section style={styles.cardError}>{error}</section>
-      )}
+      {error && <section style={styles.cardError}>{error}</section>}
 
       {!loading && derived.rows.length === 0 && (
         <section style={styles.card}>
@@ -165,13 +197,24 @@ const styles = {
   meta: {
     display: "flex",
     justifyContent: "space-between",
-    alignItems: "center"
+    alignItems: "center",
+    gap: 12,
+    flexWrap: "wrap"
   },
+  actions: { display: "flex", gap: 8 },
   button: {
     padding: "8px 12px",
     borderRadius: 8,
     border: "1px solid rgba(255,255,255,0.2)",
     background: "rgba(255,255,255,0.05)",
+    color: "#e6edf3",
+    cursor: "pointer"
+  },
+  buttonSecondary: {
+    padding: "8px 12px",
+    borderRadius: 8,
+    border: "1px dashed rgba(255,255,255,0.25)",
+    background: "rgba(255,255,255,0.03)",
     color: "#e6edf3",
     cursor: "pointer"
   },
