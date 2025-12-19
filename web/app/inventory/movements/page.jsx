@@ -5,8 +5,11 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
+import { usePersistedString } from "../_ui/useViewState.jsx";
 
 export const runtime = "edge";
+
+const STORE_KEY = "asora_view:movements:itemId";
 
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
@@ -16,12 +19,24 @@ export default function InventoryMovementsPage() {
   const { isCompact } = useDensity();
 
   const sp = useSearchParams();
-  const initialItemId = sp?.get("itemId") || "";
+  const qpItemId = sp?.get("itemId") || "";
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [filterItemId, setFilterItemId] = useState(initialItemId);
+  const [persistedItemId, setPersistedItemId] = usePersistedString(STORE_KEY, "");
+
+  // Query-param wins; otherwise fall back to persisted.
+  const [filterItemId, setFilterItemId] = useState(qpItemId || persistedItemId);
   const [events, setEvents] = useState([]);
+
+  // If URL itemId changes, adopt it and persist it.
+  useEffect(() => {
+    if (qpItemId && qpItemId !== filterItemId) {
+      setFilterItemId(qpItemId);
+      setPersistedItemId(qpItemId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qpItemId]);
 
   async function load() {
     setLoading(true);
@@ -60,7 +75,6 @@ export default function InventoryMovementsPage() {
   }, [events, filterItemId]);
 
   const focus = (filterItemId || "").trim();
-
   const s = isCompact ? compact : styles;
 
   return (
@@ -69,7 +83,7 @@ export default function InventoryMovementsPage() {
 
       <header style={s.header}>
         <div style={s.title}>Inventory Movements</div>
-        <div style={s.sub}>Chronological, ledger-derived movement timeline (read-only).</div>
+        <div style={s.sub}>Chronological, ledger-derived movement timeline (read-only). Filter is saved locally.</div>
       </header>
 
       <section style={s.card}>
@@ -79,7 +93,11 @@ export default function InventoryMovementsPage() {
             <input
               style={s.input}
               value={filterItemId}
-              onChange={(e) => setFilterItemId(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setFilterItemId(v);
+                setPersistedItemId(v);
+              }}
               placeholder="e.g. ITEM-123"
             />
           </label>
@@ -125,9 +143,7 @@ export default function InventoryMovementsPage() {
                     <td style={s.td}>
                       <span style={s.mono}>{ts}</span>
                     </td>
-                    <td style={s.td}>
-                      {itemId ? <span style={s.mono}>{itemId}</span> : <span style={s.muted}>—</span>}
-                    </td>
+                    <td style={s.td}>{itemId ? <span style={s.mono}>{itemId}</span> : <span style={s.muted}>—</span>}</td>
                     <td style={{ ...s.tdRight, ...(neg ? s.neg : null) }}>
                       <span style={s.mono}>{typeof q === "number" ? q : "—"}</span>
                     </td>
@@ -153,7 +169,7 @@ export default function InventoryMovementsPage() {
         <div style={s.noteTitle}>Notes</div>
         <ul style={s.ul}>
           <li>Sorting is deterministic: ts ascending, then id as a tie-breaker if present.</li>
-          <li>Query parameter support: /inventory/movements?itemId=… pre-fills the filter.</li>
+          <li>URL itemId overrides saved filter and will be persisted.</li>
         </ul>
       </section>
     </main>
@@ -162,7 +178,6 @@ export default function InventoryMovementsPage() {
 
 const styles = {
   shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
-
   header: { marginBottom: 16 },
   title: { fontSize: 22, fontWeight: 700 },
   sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
