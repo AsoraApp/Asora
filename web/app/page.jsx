@@ -5,7 +5,7 @@ export default function HomePage() {
     <main style={styles.shell}>
       <header style={styles.header}>
         <div style={styles.brand}>Asora</div>
-        <div style={styles.sub}>U1 — Read-only UI foundation</div>
+        <div style={styles.sub}>U3 — Read-only Admin Console</div>
       </header>
 
       <section style={styles.card}>
@@ -17,6 +17,9 @@ export default function HomePage() {
           <Link style={styles.link} href="/inventory/items">
             Inventory Items
           </Link>
+          <Link style={styles.linkSecondary} href="/audit">
+            Audit Log (placeholder)
+          </Link>
         </div>
       </section>
 
@@ -25,7 +28,9 @@ export default function HomePage() {
         <ul style={styles.ul}>
           <li>Read-only UI.</li>
           <li>Ledger remains the only write path.</li>
-          <li>Use dev_token for now (no login UI).</li>
+          <li>Inventory reads are ledger-derived.</li>
+          <li>Use <code>dev_token</code> for tenant scoping (no login UI).</li>
+          <li>Audit Log UI is a placeholder until a read endpoint exists.</li>
         </ul>
       </section>
     </main>
@@ -59,6 +64,16 @@ const styles = {
     color: "#e6edf3",
     textDecoration: "none",
     background: "rgba(255,255,255,0.03)"
+  },
+  linkSecondary: {
+    display: "inline-block",
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "1px dashed rgba(255,255,255,0.18)",
+    color: "#e6edf3",
+    textDecoration: "none",
+    background: "rgba(255,255,255,0.01)",
+    opacity: 0.85
   },
   ul: { margin: 0, paddingLeft: 18, opacity: 0.85 }
 };
