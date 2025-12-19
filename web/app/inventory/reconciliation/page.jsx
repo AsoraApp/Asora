@@ -5,8 +5,11 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
+import { usePersistedString } from "../_ui/useViewState.jsx";
 
 export const runtime = "edge";
+
+const STORE_KEY = "asora_view:reconciliation:itemId";
 
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
@@ -40,11 +43,22 @@ export default function InventoryReconciliationPage() {
   const { isCompact } = useDensity();
 
   const sp = useSearchParams();
-  const initialFocus = sp?.get("itemId") || "";
+  const qpItemId = sp?.get("itemId") || "";
+
+  const [persistedFocus, setPersistedFocus] = usePersistedString(STORE_KEY, "");
+  const [focusItemId, setFocusItemId] = useState(qpItemId || persistedFocus);
+
+  // If URL itemId changes, adopt it and persist it.
+  useEffect(() => {
+    if (qpItemId && qpItemId !== focusItemId) {
+      setFocusItemId(qpItemId);
+      setPersistedFocus(qpItemId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qpItemId]);
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [focusItemId, setFocusItemId] = useState(initialFocus);
   const [invMap, setInvMap] = useState(new Map());
   const [ledgerMap, setLedgerMap] = useState(new Map());
 
@@ -52,10 +66,7 @@ export default function InventoryReconciliationPage() {
     setLoading(true);
     setErr("");
     try {
-      const [invR, ledR] = await Promise.all([
-        asoraGetJson("/v1/inventory/items", {}),
-        asoraGetJson("/v1/ledger/events", {}),
-      ]);
+      const [invR, ledR] = await Promise.all([asoraGetJson("/v1/inventory/items", {}), asoraGetJson("/v1/ledger/events", {})]);
 
       const invItems = normalizeInventoryItemsPayload(invR);
       const iMap = new Map();
@@ -87,6 +98,8 @@ export default function InventoryReconciliationPage() {
     load();
   }, []);
 
+  const focus = (focusItemId || "").trim();
+
   const rows = useMemo(() => {
     const ids = new Set();
     for (const k of invMap.keys()) ids.add(k);
@@ -102,14 +115,12 @@ export default function InventoryReconciliationPage() {
       })
       .sort((a, b) => a.itemId.localeCompare(b.itemId));
 
-    const focus = (focusItemId || "").trim();
     if (focus) out = out.filter((r) => r.itemId === focus);
 
     return out;
-  }, [invMap, ledgerMap, focusItemId]);
+  }, [invMap, ledgerMap, focus]);
 
   const mismatchCount = useMemo(() => rows.filter((r) => r.mismatch).length, [rows]);
-  const focus = (focusItemId || "").trim();
 
   const s = isCompact ? compact : styles;
 
@@ -120,8 +131,8 @@ export default function InventoryReconciliationPage() {
       <header style={s.header}>
         <div style={s.title}>Ledger ↔ Inventory Reconciliation</div>
         <div style={s.sub}>
-          Side-by-side comparison between inventory read quantity (best-effort) and ledger-derived quantity. No
-          assumptions about which side is correct.
+          Side-by-side comparison between inventory read quantity (best-effort) and ledger-derived quantity. Focus is
+          saved locally.
         </div>
       </header>
 
@@ -132,7 +143,11 @@ export default function InventoryReconciliationPage() {
             <input
               style={s.input}
               value={focusItemId}
-              onChange={(e) => setFocusItemId(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setFocusItemId(v);
+                setPersistedFocus(v);
+              }}
               placeholder="e.g. ITEM-123"
             />
           </label>
@@ -211,7 +226,7 @@ export default function InventoryReconciliationPage() {
       <section style={s.card}>
         <div style={s.noteTitle}>Notes</div>
         <ul style={s.ul}>
-          <li>Query parameter support: /inventory/reconciliation?itemId=… filters to a single itemId.</li>
+          <li>URL itemId overrides saved focus and will be persisted.</li>
           <li>Inventory quantity extraction is best-effort and explicitly non-authoritative.</li>
           <li>All derivation and mismatch signaling is client-side and read-only.</li>
         </ul>
