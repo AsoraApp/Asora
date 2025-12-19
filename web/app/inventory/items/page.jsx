@@ -1,6 +1,7 @@
 import Link from "next/link";
 import ItemsClient from "./ui/ItemsClient";
 
+export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
 export default function InventoryItemsPage() {
