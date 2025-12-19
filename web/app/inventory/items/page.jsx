@@ -3,9 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { asoraGetJson } from "@/lib/asoraFetch";
+import { asoraGetJson, getStoredDevToken } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 import { usePersistedString } from "../_ui/useViewState.jsx";
+import AdminHeader from "../_ui/AdminHeader.jsx";
+import LedgerFreshnessBar from "../_ui/LedgerFreshnessBar.jsx";
 
 export const runtime = "edge";
 
@@ -69,6 +71,12 @@ export default function InventoryItemsPage() {
   const [persistedFocus, setPersistedFocus] = usePersistedString(STORE_KEY, "");
   const [focusItemId, setFocusItemId] = useState(qpItemId || persistedFocus);
 
+  // Freshness UI (items endpoint is not ledger-cached; we still expose operator clarity)
+  const [lastFetchedUtc, setLastFetchedUtc] = useState("");
+  const [cacheStatus, setCacheStatus] = useState("fresh");
+
+  const tenantId = useMemo(() => (getStoredDevToken?.() || ""), []);
+
   // If URL itemId changes, adopt it and persist it.
   useEffect(() => {
     if (qpItemId && qpItemId !== focusItemId) {
@@ -89,9 +97,13 @@ export default function InventoryItemsPage() {
       const r = await asoraGetJson("/v1/inventory/items", {});
       const list = normalizeInventoryItemsPayload(r);
       setRows(list);
+      setLastFetchedUtc(new Date().toISOString());
+      setCacheStatus("fresh");
     } catch (e) {
       setErr(e?.message || "Failed to load inventory items.");
       setRows([]);
+      setLastFetchedUtc("");
+      setCacheStatus("fresh");
     } finally {
       setLoading(false);
     }
@@ -122,12 +134,21 @@ export default function InventoryItemsPage() {
 
   return (
     <main style={s.shell}>
-      <CompactBar here="Inventory Items" />
+      <AdminHeader
+        title="Inventory Items"
+        subtitle="Read-only inventory item list (best-effort shape). Focus is saved locally."
+        tenantId={tenantId}
+        freshnessBar={
+          <LedgerFreshnessBar
+            lastFetchedUtc={lastFetchedUtc}
+            cacheStatus={cacheStatus}
+            onRefresh={() => load()}
+            onClearCache={null}
+          />
+        }
+      />
 
-      <header style={s.header}>
-        <div style={s.title}>Inventory Items</div>
-        <div style={s.sub}>Read-only inventory item list (best-effort shape). Focus is saved locally.</div>
-      </header>
+      <CompactBar here="Inventory Items" />
 
       <section style={s.card}>
         <div style={s.controls}>
@@ -227,10 +248,6 @@ export default function InventoryItemsPage() {
 const styles = {
   shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
 
-  header: { marginBottom: 16 },
-  title: { fontSize: 22, fontWeight: 700 },
-  sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
-
   card: { border: "1px solid #e5e5e5", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fff" },
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
   label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
@@ -263,29 +280,20 @@ const styles = {
 const compact = {
   ...styles,
   shell: { ...styles.shell, padding: 14 },
-  header: { marginBottom: 10 },
-  title: { fontSize: 18, fontWeight: 750 },
-  sub: { ...styles.sub, fontSize: 12 },
-
   card: { ...styles.card, padding: 12, marginBottom: 12 },
   label: { ...styles.label, fontSize: 12 },
   input: { ...styles.input, padding: "6px 8px", fontSize: 12 },
   button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
-
   quickLinks: { ...styles.quickLinks, fontSize: 12 },
   meta: { ...styles.meta, fontSize: 12 },
-
   err: { ...styles.err, fontSize: 12 },
   empty: { ...styles.empty, fontSize: 12 },
-
   th: { ...styles.th, padding: "8px 6px", fontSize: 11 },
   thRight: { ...styles.thRight, padding: "8px 6px", fontSize: 11 },
   td: { ...styles.td, padding: "8px 6px", fontSize: 12 },
   tdRight: { ...styles.tdRight, padding: "8px 6px", fontSize: 12 },
-
   link: { ...styles.link, fontSize: 12 },
   linkSecondary: { ...styles.linkSecondary, fontSize: 12 },
-
   noteTitle: { ...styles.noteTitle, fontSize: 13 },
   ul: { ...styles.ul, fontSize: 12 },
 };
