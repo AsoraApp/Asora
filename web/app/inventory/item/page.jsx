@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
+import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 
 export const runtime = "edge";
 
@@ -12,6 +13,8 @@ function movementsHref(itemId) {
 }
 
 export default function InventoryItemDrillDownPage() {
+  const { isCompact } = useDensity();
+
   const sp = useSearchParams();
   const initialItemId = sp?.get("itemId") || "";
 
@@ -80,77 +83,65 @@ export default function InventoryItemDrillDownPage() {
   }, [events]);
 
   const iid = itemId.trim();
+  const s = isCompact ? compact : styles;
 
   return (
-    <main style={styles.shell}>
-      <header style={styles.topbar}>
-        <div style={styles.brandRow}>
-          <div style={styles.brand}>Asora</div>
-          <div style={styles.nav}>
-            <Link href="/" style={styles.navLink}>
-              Home
-            </Link>
-            <span style={styles.navSep}>/</span>
-            <Link href="/inventory/items" style={styles.navLink}>
-              Inventory Items
-            </Link>
-          </div>
-        </div>
+    <main style={s.shell}>
+      <CompactBar here="Item Drill-Down" />
+
+      <header style={s.header}>
+        <div style={s.title}>Item Drill-Down</div>
+        <div style={s.sub}>Ledger events affecting a single itemId (read-only; deterministic ordering).</div>
       </header>
 
-      <header style={styles.header}>
-        <div style={styles.title}>Item Drill-Down</div>
-        <div style={styles.sub}>Ledger events affecting a single itemId (read-only; deterministic ordering).</div>
-      </header>
-
-      <section style={styles.card}>
-        <div style={styles.controls}>
-          <label style={styles.label}>
+      <section style={s.card}>
+        <div style={s.controls}>
+          <label style={s.label}>
             itemId
-            <input style={styles.input} value={itemId} onChange={(e) => setItemId(e.target.value)} placeholder="Enter itemId" />
+            <input style={s.input} value={itemId} onChange={(e) => setItemId(e.target.value)} placeholder="Enter itemId" />
           </label>
-          <button style={styles.button} onClick={() => load(itemId)} disabled={loading}>
+          <button style={s.button} onClick={() => load(itemId)} disabled={loading}>
             {loading ? "Loading..." : "Load"}
           </button>
 
           {iid ? (
-            <div style={styles.links}>
-              <Link style={styles.link} href={movementsHref(iid)}>
+            <div style={s.links}>
+              <Link style={s.link} href={movementsHref(iid)}>
                 View movements for {iid}
               </Link>
             </div>
           ) : null}
         </div>
 
-        {err ? <div style={styles.err}>Error: {err}</div> : null}
+        {err ? <div style={s.err}>Error: {err}</div> : null}
 
         {iid ? (
-          <div style={styles.summaryRow}>
+          <div style={s.summaryRow}>
             <div>
-              Derived total qtyDelta: <span style={styles.mono}>{derivedTotal}</span>
+              Derived total qtyDelta: <span style={s.mono}>{derivedTotal}</span>
             </div>
-            <div style={styles.muted}>
-              Events missing numeric qtyDelta: <span style={styles.mono}>{missingQtyDeltaCount}</span>
+            <div style={s.muted}>
+              Events missing numeric qtyDelta: <span style={s.mono}>{missingQtyDeltaCount}</span>
             </div>
-            <div style={styles.muted}>
-              Total events shown: <span style={styles.mono}>{events.length}</span>
+            <div style={s.muted}>
+              Total events shown: <span style={s.mono}>{events.length}</span>
             </div>
           </div>
         ) : (
-          <div style={styles.empty}>Enter an itemId to view its ledger-derived history.</div>
+          <div style={s.empty}>Enter an itemId to view its ledger-derived history.</div>
         )}
 
-        {iid && events.length === 0 && !loading ? <div style={styles.empty}>No events found for this itemId.</div> : null}
+        {iid && events.length === 0 && !loading ? <div style={s.empty}>No events found for this itemId.</div> : null}
 
         {events.length > 0 ? (
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
+          <div style={s.tableWrap}>
+            <table style={s.table}>
               <thead>
                 <tr>
-                  <th style={styles.th}>ts</th>
-                  <th style={styles.thRight}>qtyDelta</th>
-                  <th style={styles.th}>eventType</th>
-                  <th style={styles.th}>details</th>
+                  <th style={s.th}>ts</th>
+                  <th style={s.thRight}>qtyDelta</th>
+                  <th style={s.th}>eventType</th>
+                  <th style={s.th}>details</th>
                 </tr>
               </thead>
               <tbody>
@@ -164,15 +155,15 @@ export default function InventoryItemDrillDownPage() {
 
                   return (
                     <tr key={key}>
-                      <td style={styles.td}>
-                        <span style={styles.mono}>{ts}</span>
+                      <td style={s.td}>
+                        <span style={s.mono}>{ts}</span>
                       </td>
-                      <td style={{ ...styles.tdRight, ...(neg ? styles.neg : null) }}>
-                        <span style={styles.mono}>{typeof q === "number" ? q : "—"}</span>
+                      <td style={{ ...s.tdRight, ...(neg ? s.neg : null) }}>
+                        <span style={s.mono}>{typeof q === "number" ? q : "—"}</span>
                       </td>
-                      <td style={styles.td}>{eventType}</td>
-                      <td style={styles.td}>
-                        <span style={styles.monoSmall}>{details || "—"}</span>
+                      <td style={s.td}>{eventType}</td>
+                      <td style={s.td}>
+                        <span style={s.monoSmall}>{details || "—"}</span>
                       </td>
                     </tr>
                   );
@@ -183,9 +174,9 @@ export default function InventoryItemDrillDownPage() {
         ) : null}
       </section>
 
-      <section style={styles.card}>
-        <div style={styles.noteTitle}>Notes</div>
-        <ul style={styles.ul}>
+      <section style={s.card}>
+        <div style={s.noteTitle}>Notes</div>
+        <ul style={s.ul}>
           <li>Query parameter support: /inventory/item?itemId=… pre-fills and auto-loads on first render.</li>
           <li>Derived totals are computed client-side by summing numeric qtyDelta values only.</li>
         </ul>
@@ -197,13 +188,6 @@ export default function InventoryItemDrillDownPage() {
 const styles = {
   shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
 
-  topbar: { marginBottom: 14 },
-  brandRow: { display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 10 },
-  brand: { fontSize: 16, fontWeight: 800, letterSpacing: 0.2 },
-  nav: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-  navLink: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
-  navSep: { color: "#999", fontSize: 13 },
-
   header: { marginBottom: 16 },
   title: { fontSize: 22, fontWeight: 700 },
   sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
@@ -212,16 +196,7 @@ const styles = {
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
   label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
   input: { width: 320, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
-  button: {
-    padding: "8px 12px",
-    borderRadius: 10,
-    border: "1px solid #111",
-    background: "#111",
-    color: "#fff",
-    cursor: "pointer",
-    fontSize: 13,
-    height: 34,
-  },
+  button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
   links: { fontSize: 13, paddingBottom: 2 },
   link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
 
@@ -243,4 +218,32 @@ const styles = {
 
   noteTitle: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
   ul: { margin: 0, paddingLeft: 18, color: "#333", fontSize: 13, lineHeight: 1.5 },
+};
+
+const compact = {
+  ...styles,
+  shell: { ...styles.shell, padding: 14 },
+  header: { marginBottom: 10 },
+  title: { fontSize: 18, fontWeight: 750 },
+  sub: { ...styles.sub, fontSize: 12 },
+
+  card: { ...styles.card, padding: 12, marginBottom: 12 },
+  label: { ...styles.label, fontSize: 12 },
+  input: { ...styles.input, padding: "6px 8px", fontSize: 12 },
+  button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
+
+  links: { ...styles.links, fontSize: 12 },
+  link: { ...styles.link, fontSize: 12 },
+
+  summaryRow: { ...styles.summaryRow, fontSize: 12, marginTop: 10 },
+  err: { ...styles.err, fontSize: 12 },
+  empty: { ...styles.empty, fontSize: 12 },
+
+  th: { ...styles.th, padding: "8px 6px", fontSize: 11 },
+  thRight: { ...styles.thRight, padding: "8px 6px", fontSize: 11 },
+  td: { ...styles.td, padding: "8px 6px", fontSize: 12 },
+  tdRight: { ...styles.tdRight, padding: "8px 6px", fontSize: 12 },
+
+  noteTitle: { ...styles.noteTitle, fontSize: 13 },
+  ul: { ...styles.ul, fontSize: 12 },
 };
