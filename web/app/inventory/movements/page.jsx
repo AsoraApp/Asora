@@ -3,10 +3,15 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { asoraGetJson } from "@/lib/asoraFetch";
-import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
-import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
+
+import AdminHeader from "@/app/_ui/AdminHeader.jsx";
+import CompactBar, { useDensity } from "@/app/_ui/CompactBar.jsx";
 import SavedViewsBar from "@/app/ui/SavedViewsBar";
+import LedgerFreshnessBar from "@/app/_ui/LedgerFreshnessBar.jsx";
+import IntegrityFooter from "@/app/_ui/IntegrityFooter.jsx";
+
+import { asoraGetJson } from "@/lib/asoraFetch";
+import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
 
 export const runtime = "edge";
 
@@ -34,6 +39,32 @@ function safeWriteLocalStorage(key, value) {
   }
 }
 
+function utcNowIso() {
+  return new Date().toISOString();
+}
+
+function normalizeLedgerEvents(raw) {
+  const list = Array.isArray(raw?.events) ? raw.events : Array.isArray(raw) ? raw : [];
+  return [...list].sort((a, b) => {
+    const ta = typeof a?.ts === "string" ? a.ts : "";
+    const tb = typeof b?.ts === "string" ? b.ts : "";
+    if (ta < tb) return -1;
+    if (ta > tb) return 1;
+
+    const ida =
+      (typeof a?.ledgerEventId === "string" && a.ledgerEventId) ||
+      (typeof a?.eventId === "string" && a.eventId) ||
+      (typeof a?.id === "string" && a.id) ||
+      "";
+    const idb =
+      (typeof b?.ledgerEventId === "string" && b.ledgerEventId) ||
+      (typeof b?.eventId === "string" && b.eventId) ||
+      (typeof b?.id === "string" && b.id) ||
+      "";
+    return ida.localeCompare(idb);
+  });
+}
+
 export default function InventoryMovementsPage() {
   const { isCompact } = useDensity();
   const s = isCompact ? compact : styles;
@@ -54,13 +85,18 @@ export default function InventoryMovementsPage() {
   // Deterministic paging state (reset when focus changes)
   const [page, setPage] = useState(1);
 
+  // freshness + integrity
+  const [lastFetchedUtc, setLastFetchedUtc] = useState("");
+  const [cacheStatus, setCacheStatus] = useState("unknown"); // cached | fresh | unknown
+  const [integrity, setIntegrity] = useState({ eventsProcessed: 0, skipped: [], renderUtc: "" });
+
   useEffect(() => {
     // hydrate “last typed” once (display only)
     const v = safeReadLocalStorage(LAST_STORE_KEY);
     if (v) setLastTypedItemId(v);
   }, []);
 
-  // Query param wins whenever present/changes (this IS deliberate deep-linking)
+  // Query param wins whenever present/changes (deliberate deep-linking)
   useEffect(() => {
     if (qpItemId) {
       setFilterItemId(qpItemId);
@@ -74,24 +110,21 @@ export default function InventoryMovementsPage() {
     try {
       if (force) clearLedgerCache();
 
-      const r = await getLedgerEventsCached(asoraGetJson);
-      const list = Array.isArray(r?.events) ? r.events : [];
-
-      // Deterministic sort: ts asc, then id
-      const sorted = [...list].sort((a, b) => {
-        const ta = typeof a?.ts === "string" ? a.ts : "";
-        const tb = typeof b?.ts === "string" ? b.ts : "";
-        if (ta < tb) return -1;
-        if (ta > tb) return 1;
-        const ia = typeof a?.id === "string" ? a.id : "";
-        const ib = typeof b?.id === "string" ? b.id : "";
-        return ia.localeCompare(ib);
-      });
+      const raw = await getLedgerEventsCached(asoraGetJson);
+      const sorted = normalizeLedgerEvents(raw);
 
       setEvents(sorted);
+
+      const now = utcNowIso();
+      setLastFetchedUtc(now);
+      setCacheStatus(force ? "fresh" : "cached");
+      setIntegrity({ eventsProcessed: sorted.length, skipped: [], renderUtc: now });
     } catch (e) {
       setErr(e?.message || "Failed to load ledger events.");
       setEvents([]);
+      setLastFetchedUtc("");
+      setCacheStatus("unknown");
+      setIntegrity({ eventsProcessed: 0, skipped: [], renderUtc: utcNowIso() });
     } finally {
       setLoading(false);
     }
@@ -99,6 +132,7 @@ export default function InventoryMovementsPage() {
 
   useEffect(() => {
     load({ force: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const focus = (filterItemId || "").trim();
@@ -137,14 +171,24 @@ export default function InventoryMovementsPage() {
 
   return (
     <main style={s.shell}>
-      <CompactBar here="Movements" />
+      <AdminHeader
+        title="Inventory Movements"
+        subtitle="Chronological, ledger-derived movement timeline (read-only). Optional itemId filter. Cached per-tab unless forced."
+      >
+        <LedgerFreshnessBar
+          lastFetchedUtc={lastFetchedUtc}
+          cacheStatus={cacheStatus}
+          busy={loading}
+          onRefreshCached={() => load({ force: false })}
+          onRefreshForce={() => load({ force: true })}
+          onClearCache={() => {
+            clearLedgerCache();
+            setCacheStatus("unknown");
+          }}
+        />
+      </AdminHeader>
 
-      <header style={s.header}>
-        <div style={s.title}>Inventory Movements</div>
-        <div style={s.sub}>
-          Chronological, ledger-derived movement timeline (read-only). Filter is optional. Ledger fetch is cached per tab.
-        </div>
-      </header>
+      <CompactBar here="Movements" />
 
       <section style={s.card}>
         <div style={s.controls}>
@@ -209,19 +253,10 @@ export default function InventoryMovementsPage() {
             <div style={s.pagerText}>
               Page <span style={s.mono}>{page}</span> / <span style={s.mono}>{pageCount}</span>
             </div>
-            <button
-              style={s.pagerBtn}
-              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-              disabled={page >= pageCount}
-            >
+            <button style={s.pagerBtn} onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount}>
               Next
             </button>
-            <button
-              style={s.pagerBtnSecondary}
-              onClick={() => setPage(pageCount)}
-              disabled={page >= pageCount}
-              title="Jump to last page"
-            >
+            <button style={s.pagerBtnSecondary} onClick={() => setPage(pageCount)} disabled={page >= pageCount} title="Jump to last page">
               End
             </button>
           </div>
@@ -245,7 +280,11 @@ export default function InventoryMovementsPage() {
                 const neg = typeof q === "number" && q < 0;
                 const ts = typeof e?.ts === "string" ? e.ts : "—";
                 const eventType = typeof e?.eventType === "string" ? e.eventType : "—";
-                const key = (typeof e?.id === "string" && e.id) || `${ts}:${itemId}:${idx}`;
+                const key =
+                  (typeof e?.ledgerEventId === "string" && e.ledgerEventId) ||
+                  (typeof e?.eventId === "string" && e.eventId) ||
+                  (typeof e?.id === "string" && e.id) ||
+                  `${ts}:${itemId}:${idx}`;
 
                 return (
                   <tr key={key}>
@@ -277,34 +316,49 @@ export default function InventoryMovementsPage() {
       <section style={s.card}>
         <div style={s.noteTitle}>Notes</div>
         <ul style={s.ul}>
-          <li>Sorting is deterministic: ts ascending, then id as a tie-breaker if present.</li>
+          <li>Sorting is deterministic: ts ascending, then ledgerEventId/eventId/id.</li>
           <li>Cached refresh avoids re-downloading ledger events across views in the same tab.</li>
           <li>Force refresh explicitly clears the cache and re-fetches.</li>
           <li>Last typed filter is remembered locally but is not auto-applied on first load.</li>
           <li>Saved Views are local-only (localStorage) and do not affect backend behavior.</li>
         </ul>
       </section>
+
+      <IntegrityFooter eventsProcessed={integrity.eventsProcessed} skipped={integrity.skipped} renderUtc={integrity.renderUtc} />
     </main>
   );
 }
 
 const styles = {
-  shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
-  header: { marginBottom: 16 },
-  title: { fontSize: 22, fontWeight: 700 },
-  sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
+  shell: { minHeight: "100vh", padding: 16, background: "#0b0f14", color: "#e6edf3" },
 
-  card: { border: "1px solid #e5e5e5", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fff" },
+  card: {
+    maxWidth: 1200,
+    margin: "0 auto 14px auto",
+    border: "1px solid rgba(255,255,255,0.10)",
+    borderRadius: 14,
+    padding: 16,
+    background: "rgba(255,255,255,0.04)",
+  },
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
-  label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
-  input: { width: 280, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
+  label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, opacity: 0.9 },
+  input: {
+    width: 280,
+    padding: "8px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(0,0,0,0.25)",
+    color: "#e6edf3",
+    outline: "none",
+    fontSize: 13,
+  },
 
   button: {
     padding: "8px 12px",
     borderRadius: 10,
-    border: "1px solid #111",
-    background: "#111",
-    color: "#fff",
+    border: "1px solid rgba(255,255,255,0.16)",
+    background: "rgba(255,255,255,0.08)",
+    color: "#e6edf3",
     cursor: "pointer",
     fontSize: 13,
     height: 34,
@@ -312,52 +366,65 @@ const styles = {
   buttonSecondary: {
     padding: "8px 12px",
     borderRadius: 10,
-    border: "1px solid #bbb",
-    background: "#fff",
-    color: "#111",
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(0,0,0,0.18)",
+    color: "#e6edf3",
     cursor: "pointer",
     fontSize: 13,
     height: 34,
   },
 
   quickLinks: { fontSize: 13, paddingBottom: 2 },
-  link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
+  link: { color: "#93c5fd", textDecoration: "none", fontSize: 13 },
 
-  meta: { fontSize: 13, color: "#444", paddingBottom: 2 },
+  meta: { fontSize: 13, opacity: 0.85, paddingBottom: 2 },
 
   pagerRow: { marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
-  pagerBtn: { padding: "6px 10px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", cursor: "pointer", fontSize: 13 },
-  pagerBtnSecondary: { padding: "6px 10px", borderRadius: 10, border: "1px solid #bbb", background: "#f7f7f7", cursor: "pointer", fontSize: 13 },
-  pagerText: { fontSize: 13, color: "#333" },
+  pagerBtn: {
+    padding: "6px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.06)",
+    color: "#e6edf3",
+    cursor: "pointer",
+    fontSize: 13,
+  },
+  pagerBtnSecondary: {
+    padding: "6px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(0,0,0,0.18)",
+    color: "#e6edf3",
+    cursor: "pointer",
+    fontSize: 13,
+  },
+  pagerText: { fontSize: 13, opacity: 0.85 },
 
-  err: { marginTop: 10, color: "#b00020", fontSize: 13 },
-  empty: { marginTop: 12, color: "#666", fontSize: 13 },
+  err: { marginTop: 10, color: "#ff7b7b", fontSize: 13 },
+  empty: { marginTop: 12, opacity: 0.8, fontSize: 13 },
 
   tableWrap: { width: "100%", overflowX: "auto", marginTop: 12 },
   table: { borderCollapse: "collapse", width: "100%" },
-  th: { textAlign: "left", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
-  thRight: { textAlign: "right", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
-  td: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, verticalAlign: "top" },
-  tdRight: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, textAlign: "right", verticalAlign: "top" },
+  th: { textAlign: "left", fontSize: 12, opacity: 0.85, borderBottom: "1px solid rgba(255,255,255,0.10)", padding: "10px 8px" },
+  thRight: { textAlign: "right", fontSize: 12, opacity: 0.85, borderBottom: "1px solid rgba(255,255,255,0.10)", padding: "10px 8px" },
+  td: { padding: "10px 8px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 13, verticalAlign: "top" },
+  tdRight: { padding: "10px 8px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontSize: 13, textAlign: "right", verticalAlign: "top" },
 
-  neg: { color: "#b00020", fontWeight: 700 },
-  muted: { color: "#777" },
+  neg: { color: "#ff7b7b", fontWeight: 800 },
+  muted: { opacity: 0.65 },
   mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
 
-  noteTitle: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
-  ul: { margin: 0, paddingLeft: 18, color: "#333", fontSize: 13, lineHeight: 1.5 },
+  noteTitle: { fontSize: 14, fontWeight: 800, marginBottom: 8 },
+  ul: { margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.5, opacity: 0.9 },
 };
 
 const compact = {
   ...styles,
-  shell: { ...styles.shell, padding: 14 },
-  header: { marginBottom: 10 },
-  title: { fontSize: 18, fontWeight: 750 },
-  sub: { ...styles.sub, fontSize: 12 },
+  shell: { ...styles.shell, padding: 12 },
+  card: { ...styles.card, padding: 12, margin: "0 auto 12px auto" },
 
-  card: { ...styles.card, padding: 12, marginBottom: 12 },
   label: { ...styles.label, fontSize: 12 },
-  input: { ...styles.input, padding: "6px 8px", fontSize: 12 },
+  input: { ...styles.input, padding: "6px 8px", fontSize: 12, width: 240 },
 
   button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
   buttonSecondary: { ...styles.buttonSecondary, padding: "6px 10px", fontSize: 12, height: 30 },
@@ -368,15 +435,10 @@ const compact = {
   pagerBtnSecondary: { ...styles.pagerBtnSecondary, fontSize: 12 },
   pagerText: { ...styles.pagerText, fontSize: 12 },
 
-  err: { ...styles.err, fontSize: 12 },
-  empty: { ...styles.empty, fontSize: 12 },
-
   th: { ...styles.th, padding: "8px 6px", fontSize: 11 },
   thRight: { ...styles.thRight, padding: "8px 6px", fontSize: 11 },
   td: { ...styles.td, padding: "8px 6px", fontSize: 12 },
   tdRight: { ...styles.tdRight, padding: "8px 6px", fontSize: 12 },
-
-  link: { ...styles.link, fontSize: 12 },
 
   noteTitle: { ...styles.noteTitle, fontSize: 13 },
   ul: { ...styles.ul, fontSize: 12 },
