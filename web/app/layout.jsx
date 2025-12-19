@@ -1,10 +1,11 @@
 import DevTokenBar from "@/app/ui/DevTokenBar";
+import GlobalItemSearch from "@/app/ui/GlobalItemSearch";
 
 export const runtime = "edge";
 
 export const metadata = {
   title: "Asora — U1",
-  description: "Asora U1 read-only admin console"
+  description: "Asora U1 read-only admin console",
 };
 
 export default function RootLayout({ children }) {
@@ -14,10 +15,11 @@ export default function RootLayout({ children }) {
         style={{
           margin: 0,
           fontFamily:
-            "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial"
+            "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial",
         }}
       >
         <DevTokenBar />
+        <GlobalItemSearch />
         <div style={{ padding: 16 }}>{children}</div>
       </body>
     </html>
