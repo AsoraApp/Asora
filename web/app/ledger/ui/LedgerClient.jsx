@@ -3,14 +3,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { asoraGetJson, getStoredDevToken } from "@/lib/asoraFetch";
 
+const PAGE_SIZES = [25, 50, 100, 250];
+
 export default function LedgerClient() {
   const [eventType, setEventType] = useState("");
   const [itemId, setItemId] = useState("");
-  const [order, setOrder] = useState("desc"); // deterministic UI order
+  const [searchText, setSearchText] = useState("");
+  const [order, setOrder] = useState("desc"); // newest-first default
+  const [pageSize, setPageSize] = useState(50);
+  const [page, setPage] = useState(1);
+
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
 
   const devToken = useMemo(() => getStoredDevToken(), []);
+  const missingToken = !devToken;
 
   const query = useMemo(() => {
     // Backend may not support filter params; fetch all and filter client-side.
@@ -23,6 +30,7 @@ export default function LedgerClient() {
     try {
       const r = await asoraGetJson("/v1/ledger/events", query);
       setResult(r);
+      setPage(1); // deterministic UX: reset to first page on refresh
     } finally {
       setLoading(false);
     }
@@ -32,41 +40,6 @@ export default function LedgerClient() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const missingToken = !devToken;
-
-  const events = useMemo(() => {
-    const raw = result?.ok ? result?.data?.events : null;
-    if (!Array.isArray(raw)) return [];
-
-    let filtered = raw;
-
-    if (eventType.trim()) {
-      filtered = filtered.filter((e) => String(e?.eventType || "") === eventType.trim());
-    }
-    if (itemId.trim()) {
-      filtered = filtered.filter((e) => String(e?.itemId || "") === itemId.trim());
-    }
-
-    // Deterministic ordering:
-    // Prefer ts if present; otherwise fall back to ledgerEventId; otherwise stable JSON string.
-    const withKey = filtered.map((e, idx) => {
-      const ts = e?.ts ? String(e.ts) : "";
-      const id = e?.ledgerEventId ? String(e.ledgerEventId) : "";
-      const key = ts || id || JSON.stringify(e) || String(idx);
-      return { e, key, idx };
-    });
-
-    withKey.sort((a, b) => {
-      if (a.key < b.key) return -1;
-      if (a.key > b.key) return 1;
-      return a.idx - b.idx;
-    });
-
-    if (order === "desc") withKey.reverse();
-
-    return withKey.map((x) => x.e);
-  }, [result, eventType, itemId, order]);
 
   const errorBox = !result
     ? null
@@ -83,6 +56,92 @@ export default function LedgerClient() {
   const authRequired =
     !result?.ok &&
     (result?.status === 401 || result?.code === "AUTH_REQUIRED" || result?.error === "UNAUTHORIZED");
+
+  const allEvents = useMemo(() => {
+    const raw = result?.ok ? result?.data?.events : null;
+    return Array.isArray(raw) ? raw : [];
+  }, [result]);
+
+  const filteredSorted = useMemo(() => {
+    let filtered = allEvents;
+
+    const et = eventType.trim();
+    const iid = itemId.trim();
+    const q = searchText.trim().toLowerCase();
+
+    if (et) {
+      filtered = filtered.filter((e) => String(e?.eventType || "") === et);
+    }
+    if (iid) {
+      filtered = filtered.filter((e) => String(e?.itemId || "") === iid);
+    }
+    if (q) {
+      filtered = filtered.filter((e) => matchesSearch(e, q));
+    }
+
+    // Deterministic ordering using a stable sort key:
+    // 1) ts (string compare works with ISO-8601)
+    // 2) ledgerEventId
+    // 3) eventId
+    // 4) stable JSON
+    const withKey = filtered.map((e, idx) => {
+      const ts = e?.ts ? String(e.ts) : "";
+      const ledgerEventId = e?.ledgerEventId ? String(e.ledgerEventId) : "";
+      const eventId = e?.eventId ? String(e.eventId) : "";
+      const key = ts || ledgerEventId || eventId || safeStableKey(e) || String(idx);
+      return { e, key, idx };
+    });
+
+    withKey.sort((a, b) => {
+      if (a.key < b.key) return -1;
+      if (a.key > b.key) return 1;
+      return a.idx - b.idx;
+    });
+
+    if (order === "desc") withKey.reverse();
+
+    return withKey.map((x) => x.e);
+  }, [allEvents, eventType, itemId, searchText, order]);
+
+  const pageCount = useMemo(() => {
+    const n = filteredSorted.length;
+    const ps = Number(pageSize) || 50;
+    return Math.max(1, Math.ceil(n / ps));
+  }, [filteredSorted.length, pageSize]);
+
+  const clampedPage = useMemo(() => {
+    if (page < 1) return 1;
+    if (page > pageCount) return pageCount;
+    return page;
+  }, [page, pageCount]);
+
+  const pagedEvents = useMemo(() => {
+    const ps = Number(pageSize) || 50;
+    const start = (clampedPage - 1) * ps;
+    return filteredSorted.slice(start, start + ps);
+  }, [filteredSorted, pageSize, clampedPage]);
+
+  useEffect(() => {
+    // If filters reduce total pages, clamp page deterministically.
+    if (page !== clampedPage) setPage(clampedPage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clampedPage]);
+
+  function clearFilters() {
+    setEventType("");
+    setItemId("");
+    setSearchText("");
+    setPage(1);
+  }
+
+  const showingRange = useMemo(() => {
+    const total = filteredSorted.length;
+    const ps = Number(pageSize) || 50;
+    if (total === 0) return { from: 0, to: 0, total: 0 };
+    const from = (clampedPage - 1) * ps + 1;
+    const to = Math.min(total, clampedPage * ps);
+    return { from, to, total };
+  }, [filteredSorted.length, pageSize, clampedPage]);
 
   return (
     <section style={styles.grid}>
@@ -106,23 +165,43 @@ export default function LedgerClient() {
         )}
 
         <div style={styles.field}>
-          <div style={styles.label}>Filter: eventType</div>
+          <div style={styles.label}>Filter: eventType (exact)</div>
           <input
             style={styles.input}
             value={eventType}
-            onChange={(e) => setEventType(e.target.value)}
+            onChange={(e) => {
+              setEventType(e.target.value);
+              setPage(1);
+            }}
             placeholder="ITEM_CREATED"
             spellCheck={false}
           />
         </div>
 
         <div style={styles.field}>
-          <div style={styles.label}>Filter: itemId</div>
+          <div style={styles.label}>Filter: itemId (exact)</div>
           <input
             style={styles.input}
             value={itemId}
-            onChange={(e) => setItemId(e.target.value)}
+            onChange={(e) => {
+              setItemId(e.target.value);
+              setPage(1);
+            }}
             placeholder="item_test_001"
+            spellCheck={false}
+          />
+        </div>
+
+        <div style={styles.field}>
+          <div style={styles.label}>Search (text)</div>
+          <input
+            style={styles.input}
+            value={searchText}
+            onChange={(e) => {
+              setSearchText(e.target.value);
+              setPage(1);
+            }}
+            placeholder="Search eventType, itemId, tenantId, ids, qtyDelta…"
             spellCheck={false}
           />
         </div>
@@ -135,14 +214,36 @@ export default function LedgerClient() {
           </select>
         </div>
 
+        <div style={styles.field}>
+          <div style={styles.label}>Page size</div>
+          <select
+            style={styles.select}
+            value={String(pageSize)}
+            onChange={(e) => {
+              const ps = Number(e.target.value) || 50;
+              setPageSize(ps);
+              setPage(1);
+            }}
+          >
+            {PAGE_SIZES.map((n) => (
+              <option key={n} value={String(n)}>
+                {n} / page
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div style={styles.row}>
           <button style={styles.button} onClick={load} disabled={loading}>
             {loading ? "Loading…" : "Refresh"}
           </button>
+          <button style={styles.buttonSecondary} onClick={clearFilters} disabled={loading}>
+            Clear filters
+          </button>
         </div>
 
         <div style={styles.hint}>
-          The UI fetches all events and filters client-side. No writes are performed.
+          Fetches all tenant-scoped events and applies filters/sort/pagination client-side. No writes are performed.
         </div>
       </div>
 
@@ -180,7 +281,13 @@ export default function LedgerClient() {
         {!errorBox ? (
           <div style={styles.meta}>
             <div>
-              <b>Count:</b> {events.length}
+              <b>Filtered:</b> {filteredSorted.length}{" "}
+              <span style={{ opacity: 0.8 }}>
+                (showing {showingRange.from}-{showingRange.to})
+              </span>
+            </div>
+            <div style={{ opacity: 0.85 }}>
+              <b>Page:</b> {clampedPage} / {pageCount}
             </div>
             {result?.ok ? (
               <div style={{ opacity: 0.8 }}>
@@ -190,29 +297,151 @@ export default function LedgerClient() {
           </div>
         ) : null}
 
+        {!errorBox && filteredSorted.length === 0 ? (
+          <div style={styles.empty}>
+            <div style={styles.emptyTitle}>No events</div>
+            <div style={styles.emptyBody}>
+              Adjust filters/search or refresh. If you expected data, verify the tenant has ledger events.
+            </div>
+          </div>
+        ) : null}
+
+        {!errorBox ? (
+          <div style={styles.pager}>
+            <button
+              style={styles.pagerBtn}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={clampedPage <= 1}
+            >
+              ← Prev
+            </button>
+            <div style={styles.pagerMid}>
+              <span style={styles.monoSmall}>
+                Page {clampedPage} of {pageCount}
+              </span>
+            </div>
+            <button
+              style={styles.pagerBtn}
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              disabled={clampedPage >= pageCount}
+            >
+              Next →
+            </button>
+          </div>
+        ) : null}
+
         <div style={styles.list}>
-          {events.map((e, i) => {
+          {pagedEvents.map((e, i) => {
             const ts = e?.ts ? String(e.ts) : "";
+            const tenantId = e?.tenantId ? String(e.tenantId) : "";
+            const ledgerEventId = e?.ledgerEventId ? String(e.ledgerEventId) : "";
+            const eventId = e?.eventId ? String(e.eventId) : "";
             const et = e?.eventType ? String(e.eventType) : "";
             const iid = e?.itemId ? String(e.itemId) : "";
             const qd = e?.qtyDelta !== undefined ? String(e.qtyDelta) : "";
 
+            const stableId = ledgerEventId || eventId || `${ts}-${et}-${iid}-${i}`;
+            const headerBits = [
+              et || "UNKNOWN_EVENT",
+              iid ? `itemId=${iid}` : null,
+              qd ? `qtyDelta=${qd}` : null,
+              tenantId ? `tenantId=${tenantId}` : null,
+              ts ? `ts=${ts}` : null,
+              ledgerEventId ? `ledgerEventId=${ledgerEventId}` : null
+            ].filter(Boolean);
+
             return (
-              <details key={`${i}-${ts}-${et}-${iid}`} style={styles.item}>
+              <details key={stableId} style={styles.item}>
                 <summary style={styles.summary}>
                   <span style={styles.badge}>{et || "UNKNOWN_EVENT"}</span>
-                  <span style={styles.monoSmall}>{iid ? `itemId=${iid}` : ""}</span>
-                  <span style={styles.monoSmall}>{qd ? `qtyDelta=${qd}` : ""}</span>
-                  <span style={styles.monoSmall}>{ts ? `ts=${ts}` : ""}</span>
+
+                  <div style={styles.summaryCols}>
+                    <div style={styles.summaryLine}>
+                      {iid ? <span style={styles.monoSmall}>itemId={iid}</span> : null}
+                      {qd ? <span style={styles.monoSmall}>qtyDelta={qd}</span> : null}
+                      {tenantId ? <span style={styles.monoSmall}>tenantId={tenantId}</span> : null}
+                    </div>
+                    <div style={styles.summaryLine}>
+                      {ts ? <span style={styles.monoSmall}>ts={ts}</span> : null}
+                      {ledgerEventId ? (
+                        <span style={styles.monoSmall}>ledgerEventId={ledgerEventId}</span>
+                      ) : eventId ? (
+                        <span style={styles.monoSmall}>eventId={eventId}</span>
+                      ) : null}
+                    </div>
+                  </div>
                 </summary>
+
+                <div style={styles.itemMeta}>
+                  <div style={styles.miniRow}>
+                    <span style={styles.miniLabel}>Quick:</span>
+                    <span style={styles.monoSmall}>{headerBits.join("  •  ")}</span>
+                  </div>
+                </div>
+
                 <pre style={styles.pre}>{safeStringify(e)}</pre>
               </details>
             );
           })}
         </div>
+
+        {!errorBox ? (
+          <div style={styles.pagerBottom}>
+            <button
+              style={styles.pagerBtn}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={clampedPage <= 1}
+            >
+              ← Prev
+            </button>
+            <button
+              style={styles.pagerBtn}
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              disabled={clampedPage >= pageCount}
+            >
+              Next →
+            </button>
+          </div>
+        ) : null}
       </div>
     </section>
   );
+}
+
+function matchesSearch(e, q) {
+  const hay = [];
+
+  // Common top-level fields
+  hay.push(String(e?.eventType || ""));
+  hay.push(String(e?.itemId || ""));
+  hay.push(String(e?.tenantId || ""));
+  hay.push(String(e?.ts || ""));
+  hay.push(String(e?.qtyDelta ?? ""));
+  hay.push(String(e?.ledgerEventId || ""));
+  hay.push(String(e?.eventId || ""));
+
+  // Common nested shapes (best-effort, client-side)
+  const item = e?.item;
+  if (item && typeof item === "object") {
+    hay.push(String(item?.name || ""));
+    hay.push(String(item?.sku || ""));
+    hay.push(String(item?.uom || ""));
+  }
+
+  // If nothing matches, fall back to serialized JSON (bounded by try/catch)
+  const joined = hay.join(" ").toLowerCase();
+  if (joined.includes(q)) return true;
+
+  const raw = safeStableKey(e);
+  return raw.toLowerCase().includes(q);
+}
+
+function safeStableKey(x) {
+  try {
+    return JSON.stringify(x);
+  } catch {
+    return String(x);
+  }
 }
 
 function safeStringify(x) {
@@ -250,7 +479,7 @@ const styles = {
     color: "#e6edf3",
     outline: "none"
   },
-  row: { display: "flex", gap: 10, alignItems: "center" },
+  row: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
   button: {
     padding: "10px 12px",
     borderRadius: 10,
@@ -259,14 +488,42 @@ const styles = {
     color: "#e6edf3",
     cursor: "pointer"
   },
+  buttonSecondary: {
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(0,0,0,0.18)",
+    color: "#e6edf3",
+    cursor: "pointer"
+  },
   hint: { marginTop: 10, fontSize: 12, opacity: 0.75, lineHeight: 1.35 },
   meta: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 10, fontSize: 13 },
+
+  pager: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 12
+  },
+  pagerBottom: { display: "flex", justifyContent: "space-between", gap: 10, marginTop: 12 },
+  pagerBtn: {
+    padding: "8px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(255,255,255,0.06)",
+    color: "#e6edf3",
+    cursor: "pointer"
+  },
+  pagerMid: { display: "flex", alignItems: "center", gap: 8 },
+
   mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
   monoSmall: {
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
     fontSize: 12,
-    opacity: 0.85
+    opacity: 0.9
   },
+
   list: { display: "flex", flexDirection: "column", gap: 10 },
   item: {
     border: "1px solid rgba(255,255,255,0.10)",
@@ -274,7 +531,7 @@ const styles = {
     padding: 10,
     background: "rgba(0,0,0,0.18)"
   },
-  summary: { cursor: "pointer", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
+  summary: { cursor: "pointer", display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap" },
   badge: {
     display: "inline-block",
     padding: "4px 8px",
@@ -282,8 +539,16 @@ const styles = {
     border: "1px solid rgba(255,255,255,0.16)",
     background: "rgba(255,255,255,0.05)",
     fontSize: 12,
-    fontWeight: 700
+    fontWeight: 700,
+    marginTop: 1
   },
+  summaryCols: { display: "flex", flexDirection: "column", gap: 4, minWidth: 0, flex: "1 1 auto" },
+  summaryLine: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
+
+  itemMeta: { marginTop: 8 },
+  miniRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
+  miniLabel: { fontSize: 12, opacity: 0.75 },
+
   pre: {
     margin: 0,
     marginTop: 10,
@@ -294,6 +559,7 @@ const styles = {
     fontSize: 12,
     lineHeight: 1.35
   },
+
   error: {
     border: "1px solid rgba(255,80,80,0.35)",
     background: "rgba(255,80,80,0.08)",
@@ -304,6 +570,17 @@ const styles = {
   errorTitle: { fontWeight: 800, marginBottom: 6 },
   errorLine: { fontSize: 13, marginBottom: 4 },
   details: { marginTop: 8 },
+
+  empty: {
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: "rgba(0,0,0,0.18)",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 12
+  },
+  emptyTitle: { fontWeight: 800, marginBottom: 6 },
+  emptyBody: { fontSize: 13, opacity: 0.85, lineHeight: 1.35 },
+
   bannerWarn: {
     border: "1px solid rgba(255,200,80,0.35)",
     background: "rgba(255,200,80,0.08)",
