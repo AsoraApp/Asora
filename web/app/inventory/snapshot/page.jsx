@@ -5,10 +5,14 @@ import Link from "next/link";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
+import SavedViewsBar from "@/app/ui/SavedViewsBar";
 
 export const runtime = "edge";
 
 const PAGE_SIZE = 500;
+
+const FOCUS_STORE_KEY = "asora_view:snapshot:focusItemId";
+const SAVED_VIEWS_KEY = "asora_saved_views:snapshot:focusItemId";
 
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
@@ -41,6 +45,22 @@ function downloadCsv(filename, header, rows) {
   URL.revokeObjectURL(url);
 }
 
+function safeReadLocalStorage(key) {
+  try {
+    return localStorage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+function safeWriteLocalStorage(key, value) {
+  try {
+    if (!value) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
+}
+
 export default function InventorySnapshotPage() {
   const { isCompact } = useDensity();
   const s = isCompact ? compact : styles;
@@ -50,8 +70,16 @@ export default function InventorySnapshotPage() {
   const [events, setEvents] = useState([]);
   const [computedAtUtc, setComputedAtUtc] = useState("");
 
+  // Focus itemId (optional)
+  const [focusItemId, setFocusItemId] = useState("");
+
   // Paging
   const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    const v = safeReadLocalStorage(FOCUS_STORE_KEY);
+    if (v) setFocusItemId(v);
+  }, []);
 
   async function load({ force = false } = {}) {
     setLoading(true);
@@ -88,6 +116,8 @@ export default function InventorySnapshotPage() {
     load({ force: false });
   }, []);
 
+  const focus = (focusItemId || "").trim();
+
   const derived = useMemo(() => {
     const m = new Map();
     let skippedMissingItemId = 0;
@@ -122,23 +152,35 @@ export default function InventorySnapshotPage() {
     };
   }, [events]);
 
+  const filteredRows = useMemo(() => {
+    if (!focus) return derived.rows;
+    // Exact match only (deterministic, no fuzzy)
+    return derived.rows.filter((r) => r.itemId === focus);
+  }, [derived.rows, focus]);
+
   useEffect(() => {
     setPage(1);
-  }, [derived.rows.length]);
+  }, [filteredRows.length, focus]);
 
-  const pageCount = useMemo(() => Math.max(1, Math.ceil(derived.rows.length / PAGE_SIZE)), [derived.rows.length]);
+  const pageCount = useMemo(() => Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE)), [filteredRows.length]);
 
   const visible = useMemo(() => {
-    const end = Math.min(derived.rows.length, page * PAGE_SIZE);
-    return derived.rows.slice(0, end);
-  }, [derived.rows, page]);
+    const end = Math.min(filteredRows.length, page * PAGE_SIZE);
+    return filteredRows.slice(0, end);
+  }, [filteredRows, page]);
 
   function exportCsvAll() {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `asora_inventory_snapshot_${ts}.csv`;
+    const filename = `asora_inventory_snapshot_${ts}${focus ? `_focus_${focus.replace(/[^a-zA-Z0-9_-]/g, "_")}` : ""}.csv`;
     const header = ["itemId", "derivedQuantity"];
-    const rows = derived.rows.map((r) => [r.itemId, r.derivedQuantity]);
+    const rows = (focus ? filteredRows : derived.rows).map((r) => [r.itemId, r.derivedQuantity]);
     downloadCsv(filename, header, rows);
+  }
+
+  function applySaved(value) {
+    const v = (value || "").trim();
+    setFocusItemId(v);
+    safeWriteLocalStorage(FOCUS_STORE_KEY, v);
   }
 
   return (
@@ -167,9 +209,30 @@ export default function InventorySnapshotPage() {
             Export CSV
           </button>
 
+          <label style={s.label}>
+            Focus itemId (optional)
+            <input
+              style={s.input}
+              value={focusItemId}
+              onChange={(e) => {
+                const v = e.target.value;
+                setFocusItemId(v);
+                safeWriteLocalStorage(FOCUS_STORE_KEY, v);
+              }}
+              placeholder="exact itemId (filters table)"
+            />
+          </label>
+
           <div style={s.meta}>
-            Items: <span style={s.mono}>{derived.rows.length}</span> | Events: <span style={s.mono}>{events.length}</span>{" "}
-            | Computed at (UTC): <span style={s.mono}>{computedAtUtc || "—"}</span>
+            Items: <span style={s.mono}>{derived.rows.length}</span> | Focus rows:{" "}
+            <span style={s.mono}>{filteredRows.length}</span> | Events: <span style={s.mono}>{events.length}</span> | Computed
+            at (UTC): <span style={s.mono}>{computedAtUtc || "—"}</span>
+            {focus ? (
+              <>
+                {" "}
+                | Focus: <span style={s.mono}>{focus}</span>
+              </>
+            ) : null}
           </div>
 
           <div style={s.metaSmall}>
@@ -178,10 +241,21 @@ export default function InventorySnapshotPage() {
           </div>
         </div>
 
-        {err ? <div style={s.err}>Error: {err}</div> : null}
-        {derived.rows.length === 0 && !loading ? <div style={s.empty}>No derived inventory rows to display.</div> : null}
+        <div style={{ marginTop: 12 }}>
+          <SavedViewsBar
+            storageKey={SAVED_VIEWS_KEY}
+            valueLabel="focus itemId"
+            currentValue={focus}
+            onApply={applySaved}
+          />
+        </div>
 
-        {derived.rows.length > 0 ? (
+        {err ? <div style={s.err}>Error: {err}</div> : null}
+        {filteredRows.length === 0 && !loading ? (
+          <div style={s.empty}>{focus ? "No derived rows for this focus itemId." : "No derived inventory rows to display."}</div>
+        ) : null}
+
+        {filteredRows.length > 0 ? (
           <div style={s.pagerRow}>
             <button style={s.pagerBtn} onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
               Prev
@@ -249,6 +323,8 @@ export default function InventorySnapshotPage() {
           <li>Negative totals are allowed and shown as-is (no clamping).</li>
           <li>Derivation ignores events missing itemId or numeric qtyDelta.</li>
           <li>“Force” recompute clears the in-tab cache and refetches ledger events.</li>
+          <li>Focus itemId filters the derived rows table only; derivation rules are unchanged.</li>
+          <li>Saved Views are local-only (localStorage) and do not affect backend behavior.</li>
         </ul>
       </section>
     </main>
@@ -264,8 +340,29 @@ const styles = {
   card: { border: "1px solid #e5e5e5", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fff" },
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" },
 
-  button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
-  buttonSecondary: { padding: "8px 12px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", color: "#111", cursor: "pointer", fontSize: 13, height: 34 },
+  button: {
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #111",
+    background: "#111",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: 13,
+    height: 34,
+  },
+  buttonSecondary: {
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid #bbb",
+    background: "#fff",
+    color: "#111",
+    cursor: "pointer",
+    fontSize: 13,
+    height: 34,
+  },
+
+  label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
+  input: { width: 280, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
 
   meta: { fontSize: 13, color: "#444" },
   metaSmall: { fontSize: 13, color: "#666" },
@@ -304,6 +401,9 @@ const compact = {
 
   button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
   buttonSecondary: { ...styles.buttonSecondary, padding: "6px 10px", fontSize: 12, height: 30 },
+
+  label: { ...styles.label, fontSize: 12 },
+  input: { ...styles.input, padding: "6px 8px", fontSize: 12, width: 240 },
 
   meta: { ...styles.meta, fontSize: 12 },
   metaSmall: { ...styles.metaSmall, fontSize: 12 },
