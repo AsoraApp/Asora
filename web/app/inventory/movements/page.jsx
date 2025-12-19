@@ -1,206 +1,159 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
+import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 
 export const runtime = "edge";
-
-function nowUtcIso() {
-  return new Date().toISOString();
-}
-
-function toCsv(rows) {
-  const header = ["itemId", "derivedQuantity"];
-  const lines = [header.join(",")];
-  for (const r of rows) {
-    const item = String(r.itemId ?? "");
-    const qty = String(r.derivedQuantity ?? "");
-    lines.push([item, qty].map((v) => `"${v.replaceAll('"', '""')}"`).join(","));
-  }
-  return lines.join("\n");
-}
-
-function downloadText(filename, text, mime = "text/plain;charset=utf-8") {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2500);
-}
 
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
 }
 
-function movementsHref(itemId) {
-  return `/inventory/movements?itemId=${encodeURIComponent(String(itemId))}`;
-}
+export default function InventoryMovementsPage() {
+  const { isCompact } = useDensity();
 
-export default function InventorySnapshotPage() {
+  const sp = useSearchParams();
+  const initialItemId = sp?.get("itemId") || "";
+
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [snapshotUtc, setSnapshotUtc] = useState("");
-  const [rows, setRows] = useState([]);
-  const [skipped, setSkipped] = useState({ missingItemId: 0, badQtyDelta: 0, nonObject: 0 });
+  const [filterItemId, setFilterItemId] = useState(initialItemId);
+  const [events, setEvents] = useState([]);
 
-  const derived = useMemo(() => rows, [rows]);
-
-  const compute = useCallback(async () => {
+  async function load() {
     setLoading(true);
     setErr("");
     try {
       const r = await asoraGetJson("/v1/ledger/events", {});
-      const events = Array.isArray(r?.events) ? r.events : [];
+      const list = Array.isArray(r?.events) ? r.events : [];
 
-      const totals = new Map();
-      let missingItemId = 0;
-      let badQtyDelta = 0;
-      let nonObject = 0;
+      const sorted = [...list].sort((a, b) => {
+        const ta = typeof a?.ts === "string" ? a.ts : "";
+        const tb = typeof b?.ts === "string" ? b.ts : "";
+        if (ta < tb) return -1;
+        if (ta > tb) return 1;
+        const ia = typeof a?.id === "string" ? a.id : "";
+        const ib = typeof b?.id === "string" ? b.id : "";
+        return ia.localeCompare(ib);
+      });
 
-      for (const e of events) {
-        if (!e || typeof e !== "object") {
-          nonObject += 1;
-          continue;
-        }
-        const itemId = e.itemId;
-        if (typeof itemId !== "string" || itemId.trim() === "") {
-          missingItemId += 1;
-          continue;
-        }
-        const q = e.qtyDelta;
-        if (typeof q !== "number" || Number.isNaN(q) || !Number.isFinite(q)) {
-          badQtyDelta += 1;
-          continue;
-        }
-        totals.set(itemId, (totals.get(itemId) || 0) + q);
-      }
-
-      const out = Array.from(totals.entries())
-        .map(([itemId, derivedQuantity]) => ({ itemId, derivedQuantity }))
-        .sort((a, b) => a.itemId.localeCompare(b.itemId));
-
-      setRows(out);
-      setSkipped({ missingItemId, badQtyDelta, nonObject });
-      setSnapshotUtc(nowUtcIso());
+      setEvents(sorted);
     } catch (e) {
       setErr(e?.message || "Failed to load ledger events.");
-      setRows([]);
-      setSkipped({ missingItemId: 0, badQtyDelta: 0, nonObject: 0 });
-      setSnapshotUtc(nowUtcIso());
+      setEvents([]);
     } finally {
       setLoading(false);
     }
-  }, []);
-
-  useEffect(() => {
-    compute();
-  }, [compute]);
-
-  function exportCsv() {
-    const csv = toCsv(derived);
-    const stamp = (snapshotUtc || nowUtcIso()).replaceAll(":", "-");
-    downloadText(`inventory_snapshot_${stamp}.csv`, csv, "text/csv;charset=utf-8");
   }
 
+  useEffect(() => {
+    load();
+  }, []);
+
+  const filtered = useMemo(() => {
+    const item = (filterItemId || "").trim();
+    if (!item) return events;
+    return events.filter((e) => typeof e?.itemId === "string" && e.itemId === item);
+  }, [events, filterItemId]);
+
+  const focus = (filterItemId || "").trim();
+
+  const s = isCompact ? compact : styles;
+
   return (
-    <main style={styles.shell}>
-      <header style={styles.topbar}>
-        <div style={styles.brandRow}>
-          <div style={styles.brand}>Asora</div>
-          <div style={styles.nav}>
-            <Link href="/" style={styles.navLink}>
-              Home
-            </Link>
-            <span style={styles.navSep}>/</span>
-            <Link href="/inventory/items" style={styles.navLink}>
-              Inventory Items
-            </Link>
-          </div>
-        </div>
+    <main style={s.shell}>
+      <CompactBar here="Movements" />
+
+      <header style={s.header}>
+        <div style={s.title}>Inventory Movements</div>
+        <div style={s.sub}>Chronological, ledger-derived movement timeline (read-only).</div>
       </header>
 
-      <header style={styles.header}>
-        <div style={styles.title}>Inventory Snapshot</div>
-        <div style={styles.sub}>
-          Derived on-hand state from ledger events (read-only; not stored). Deterministic ordering by itemId.
-        </div>
-      </header>
+      <section style={s.card}>
+        <div style={s.controls}>
+          <label style={s.label}>
+            Filter by itemId
+            <input
+              style={s.input}
+              value={filterItemId}
+              onChange={(e) => setFilterItemId(e.target.value)}
+              placeholder="e.g. ITEM-123"
+            />
+          </label>
 
-      <section style={styles.card}>
-        <div style={styles.actionsRow}>
-          <button style={styles.button} onClick={compute} disabled={loading}>
-            {loading ? "Recomputing..." : "Recompute"}
+          <button style={s.button} onClick={load} disabled={loading}>
+            {loading ? "Refreshing..." : "Refresh"}
           </button>
-          <button style={styles.buttonSecondary} onClick={exportCsv} disabled={loading || derived.length === 0}>
-            Export CSV
-          </button>
-          <div style={styles.meta}>
-            <div>
-              Snapshot UTC: <span style={styles.mono}>{snapshotUtc || "—"}</span>
+
+          {focus ? (
+            <div style={s.quickLinks}>
+              <Link style={s.link} href={itemHref(focus)}>
+                Drill-down for {focus}
+              </Link>
             </div>
-            <div style={styles.muted}>
-              Skipped events — missing itemId: <span style={styles.mono}>{skipped.missingItemId}</span>, bad qtyDelta:{" "}
-              <span style={styles.mono}>{skipped.badQtyDelta}</span>, non-object:{" "}
-              <span style={styles.mono}>{skipped.nonObject}</span>
-            </div>
-          </div>
+          ) : null}
         </div>
 
-        {err ? <div style={styles.err}>Error: {err}</div> : null}
+        {err ? <div style={s.err}>Error: {err}</div> : null}
+        {filtered.length === 0 && !loading ? <div style={s.empty}>No movements to display.</div> : null}
 
-        {derived.length === 0 && !loading ? (
-          <div style={styles.empty}>No derived quantities to display.</div>
-        ) : (
-          <div style={styles.tableWrap}>
-            <table style={styles.table}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>itemId</th>
-                  <th style={styles.thRight}>derivedQuantity</th>
-                  <th style={styles.th}>Links</th>
-                </tr>
-              </thead>
-              <tbody>
-                {derived.map((r) => {
-                  const neg = typeof r.derivedQuantity === "number" && r.derivedQuantity < 0;
-                  return (
-                    <tr key={r.itemId}>
-                      <td style={styles.td}>
-                        <span style={styles.mono}>{r.itemId}</span>
-                      </td>
-                      <td style={{ ...styles.tdRight, ...(neg ? styles.neg : null) }}>
-                        <span style={styles.mono}>{r.derivedQuantity}</span>
-                      </td>
-                      <td style={styles.td}>
-                        <div style={styles.linkRow}>
-                          <Link style={styles.link} href={itemHref(r.itemId)}>
-                            Drill-down
-                          </Link>
-                          <Link style={styles.linkSecondary} href={movementsHref(r.itemId)}>
-                            Movements
-                          </Link>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <div style={s.tableWrap}>
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={s.th}>ts</th>
+                <th style={s.th}>itemId</th>
+                <th style={s.thRight}>qtyDelta</th>
+                <th style={s.th}>eventType</th>
+                <th style={s.th}>Links</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((e, idx) => {
+                const itemId = typeof e?.itemId === "string" ? e.itemId : "";
+                const q = e?.qtyDelta;
+                const neg = typeof q === "number" && q < 0;
+                const ts = typeof e?.ts === "string" ? e.ts : "—";
+                const eventType = typeof e?.eventType === "string" ? e.eventType : "—";
+                const key = (typeof e?.id === "string" && e.id) || `${ts}:${itemId}:${idx}`;
+
+                return (
+                  <tr key={key}>
+                    <td style={s.td}>
+                      <span style={s.mono}>{ts}</span>
+                    </td>
+                    <td style={s.td}>
+                      {itemId ? <span style={s.mono}>{itemId}</span> : <span style={s.muted}>—</span>}
+                    </td>
+                    <td style={{ ...s.tdRight, ...(neg ? s.neg : null) }}>
+                      <span style={s.mono}>{typeof q === "number" ? q : "—"}</span>
+                    </td>
+                    <td style={s.td}>{eventType}</td>
+                    <td style={s.td}>
+                      {itemId ? (
+                        <Link style={s.link} href={itemHref(itemId)}>
+                          Drill-down
+                        </Link>
+                      ) : (
+                        <span style={s.muted}>—</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </section>
 
-      <section style={styles.card}>
-        <div style={styles.noteTitle}>Notes</div>
-        <ul style={styles.ul}>
-          <li>Negative totals are allowed (no clamping).</li>
-          <li>Only events with string itemId and numeric qtyDelta contribute to totals.</li>
-          <li>Links pass itemId via query string for cross-view coherence.</li>
+      <section style={s.card}>
+        <div style={s.noteTitle}>Notes</div>
+        <ul style={s.ul}>
+          <li>Sorting is deterministic: ts ascending, then id as a tie-breaker if present.</li>
+          <li>Query parameter support: /inventory/movements?itemId=… pre-fills the filter.</li>
         </ul>
       </section>
     </main>
@@ -210,25 +163,14 @@ export default function InventorySnapshotPage() {
 const styles = {
   shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
 
-  topbar: { marginBottom: 14 },
-  brandRow: { display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 10 },
-  brand: { fontSize: 16, fontWeight: 800, letterSpacing: 0.2 },
-  nav: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-  navLink: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
-  navSep: { color: "#999", fontSize: 13 },
-
   header: { marginBottom: 16 },
   title: { fontSize: 22, fontWeight: 700 },
   sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
 
-  card: {
-    border: "1px solid #e5e5e5",
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
-    background: "#fff",
-  },
-  actionsRow: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
+  card: { border: "1px solid #e5e5e5", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fff" },
+  controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
+  label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
+  input: { width: 280, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
   button: {
     padding: "8px 12px",
     borderRadius: 10,
@@ -237,19 +179,11 @@ const styles = {
     color: "#fff",
     cursor: "pointer",
     fontSize: 13,
+    height: 34,
   },
-  buttonSecondary: {
-    padding: "8px 12px",
-    borderRadius: 10,
-    border: "1px solid #bbb",
-    background: "#fff",
-    color: "#111",
-    cursor: "pointer",
-    fontSize: 13,
-  },
-  meta: { display: "flex", flexDirection: "column", gap: 4, marginLeft: 8, fontSize: 13 },
-  muted: { color: "#666" },
-  mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+  quickLinks: { fontSize: 13, paddingBottom: 2 },
+  link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
+
   err: { marginTop: 10, color: "#b00020", fontSize: 13 },
   empty: { marginTop: 12, color: "#666", fontSize: 13 },
 
@@ -258,19 +192,37 @@ const styles = {
   th: { textAlign: "left", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
   thRight: { textAlign: "right", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
   td: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, verticalAlign: "top" },
-  tdRight: {
-    padding: "10px 8px",
-    borderBottom: "1px solid #f0f0f0",
-    fontSize: 13,
-    textAlign: "right",
-    verticalAlign: "top",
-  },
+  tdRight: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, textAlign: "right", verticalAlign: "top" },
   neg: { color: "#b00020", fontWeight: 700 },
-
-  linkRow: { display: "flex", gap: 10, flexWrap: "wrap" },
-  link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
-  linkSecondary: { color: "#444", textDecoration: "none", fontSize: 13 },
+  muted: { color: "#777" },
+  mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
 
   noteTitle: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
   ul: { margin: 0, paddingLeft: 18, color: "#333", fontSize: 13, lineHeight: 1.5 },
+};
+
+const compact = {
+  ...styles,
+  shell: { ...styles.shell, padding: 14 },
+  header: { marginBottom: 10 },
+  title: { fontSize: 18, fontWeight: 750 },
+  sub: { ...styles.sub, fontSize: 12 },
+
+  card: { ...styles.card, padding: 12, marginBottom: 12 },
+  label: { ...styles.label, fontSize: 12 },
+  input: { ...styles.input, padding: "6px 8px", fontSize: 12 },
+  button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
+
+  err: { ...styles.err, fontSize: 12 },
+  empty: { ...styles.empty, fontSize: 12 },
+
+  th: { ...styles.th, padding: "8px 6px", fontSize: 11 },
+  thRight: { ...styles.thRight, padding: "8px 6px", fontSize: 11 },
+  td: { ...styles.td, padding: "8px 6px", fontSize: 12 },
+  tdRight: { ...styles.tdRight, padding: "8px 6px", fontSize: 12 },
+
+  link: { ...styles.link, fontSize: 12 },
+
+  noteTitle: { ...styles.noteTitle, fontSize: 13 },
+  ul: { ...styles.ul, fontSize: 12 },
 };
