@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { asoraGetJson, getStoredDevToken } from "@/lib/asoraFetch";
 
 const PAGE_SIZES = [25, 50, 100, 250];
@@ -12,12 +12,16 @@ export default function LedgerClient() {
   const [order, setOrder] = useState("desc"); // newest-first default
   const [pageSize, setPageSize] = useState(50);
   const [page, setPage] = useState(1);
+  const [dense, setDense] = useState(true);
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
 
   const devToken = useMemo(() => getStoredDevToken(), []);
   const missingToken = !devToken;
+
+  const [copied, setCopied] = useState(null); // { label, value }
+  const copyTimerRef = useRef(null);
 
   const query = useMemo(() => {
     // Backend may not support filter params; fetch all and filter client-side.
@@ -39,6 +43,12 @@ export default function LedgerClient() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
   }, []);
 
   const errorBox = !result
@@ -88,7 +98,8 @@ export default function LedgerClient() {
       const ts = e?.ts ? String(e.ts) : "";
       const ledgerEventId = e?.ledgerEventId ? String(e.ledgerEventId) : "";
       const eventId = e?.eventId ? String(e.eventId) : "";
-      const key = ts || ledgerEventId || eventId || safeStableKey(e) || String(idx);
+      const stableJson = safeStableKey(e) || "";
+      const key = ts || ledgerEventId || eventId || stableJson || String(idx);
       return { e, key, idx };
     });
 
@@ -142,6 +153,35 @@ export default function LedgerClient() {
     const to = Math.min(total, clampedPage * ps);
     return { from, to, total };
   }, [filteredSorted.length, pageSize, clampedPage]);
+
+  async function copyToClipboard(label, value) {
+    const v = String(value || "");
+    if (!v) return;
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(v);
+      } else {
+        // Fallback without Node APIs
+        const ta = document.createElement("textarea");
+        ta.value = v;
+        ta.setAttribute("readonly", "true");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        ta.style.top = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+
+      setCopied({ label, value: v });
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopied(null), 1200);
+    } catch {
+      // Fail-closed: no noisy UI; keep deterministic behavior.
+    }
+  }
 
   return (
     <section style={styles.grid}>
@@ -233,6 +273,18 @@ export default function LedgerClient() {
           </select>
         </div>
 
+        <div style={styles.field}>
+          <div style={styles.label}>Density</div>
+          <label style={styles.toggleRow}>
+            <input
+              type="checkbox"
+              checked={dense}
+              onChange={(e) => setDense(Boolean(e.target.checked))}
+            />
+            <span style={{ fontSize: 13, opacity: 0.9 }}>Dense mode</span>
+          </label>
+        </div>
+
         <div style={styles.row}>
           <button style={styles.button} onClick={load} disabled={loading}>
             {loading ? "Loading…" : "Refresh"}
@@ -248,7 +300,16 @@ export default function LedgerClient() {
       </div>
 
       <div style={styles.panel}>
-        <div style={styles.panelTitle}>Results</div>
+        <div style={styles.resultsHeader}>
+          <div style={styles.panelTitle}>Results</div>
+          {copied ? (
+            <div style={styles.toast}>
+              Copied <span style={styles.toastMono}>{copied.label}</span>
+            </div>
+          ) : (
+            <div />
+          )}
+        </div>
 
         {authRequired ? (
           <div style={styles.bannerWarn}>
@@ -340,46 +401,129 @@ export default function LedgerClient() {
             const iid = e?.itemId ? String(e.itemId) : "";
             const qd = e?.qtyDelta !== undefined ? String(e.qtyDelta) : "";
 
-            const stableId = ledgerEventId || eventId || `${ts}-${et}-${iid}-${i}`;
-            const headerBits = [
-              et || "UNKNOWN_EVENT",
-              iid ? `itemId=${iid}` : null,
-              qd ? `qtyDelta=${qd}` : null,
-              tenantId ? `tenantId=${tenantId}` : null,
-              ts ? `ts=${ts}` : null,
-              ledgerEventId ? `ledgerEventId=${ledgerEventId}` : null
-            ].filter(Boolean);
+            // Stable row key preferring ledgerEventId/eventId, then ts+idx.
+            const stableId = ledgerEventId || eventId || `${ts || "no-ts"}-${i}`;
+
+            const idPrimary = ledgerEventId || eventId || "";
+            const idPrimaryLabel = ledgerEventId ? "ledgerEventId" : eventId ? "eventId" : "id";
 
             return (
-              <details key={stableId} style={styles.item}>
+              <details
+                key={stableId}
+                style={{
+                  ...styles.item,
+                  ...(dense ? styles.itemDense : null)
+                }}
+              >
                 <summary style={styles.summary}>
                   <span style={styles.badge}>{et || "UNKNOWN_EVENT"}</span>
 
                   <div style={styles.summaryCols}>
                     <div style={styles.summaryLine}>
-                      {iid ? <span style={styles.monoSmall}>itemId={iid}</span> : null}
-                      {qd ? <span style={styles.monoSmall}>qtyDelta={qd}</span> : null}
-                      {tenantId ? <span style={styles.monoSmall}>tenantId={tenantId}</span> : null}
+                      {iid ? (
+                        <span style={styles.kv}>
+                          <span style={styles.k}>itemId</span>
+                          <span style={styles.vMono}>{iid}</span>
+                          <button
+                            type="button"
+                            style={styles.copyBtn}
+                            onClick={(ev) => {
+                              ev.preventDefault();
+                              ev.stopPropagation();
+                              copyToClipboard("itemId", iid);
+                            }}
+                            title="Copy itemId"
+                          >
+                            Copy
+                          </button>
+                        </span>
+                      ) : null}
+
+                      {qd ? (
+                        <span style={styles.kv}>
+                          <span style={styles.k}>qtyDelta</span>
+                          <span style={styles.vMono}>{qd}</span>
+                        </span>
+                      ) : null}
+
+                      {tenantId ? (
+                        <span style={styles.kv}>
+                          <span style={styles.k}>tenantId</span>
+                          <span style={styles.vMono}>{tenantId}</span>
+                          <button
+                            type="button"
+                            style={styles.copyBtn}
+                            onClick={(ev) => {
+                              ev.preventDefault();
+                              ev.stopPropagation();
+                              copyToClipboard("tenantId", tenantId);
+                            }}
+                            title="Copy tenantId"
+                          >
+                            Copy
+                          </button>
+                        </span>
+                      ) : null}
                     </div>
+
                     <div style={styles.summaryLine}>
-                      {ts ? <span style={styles.monoSmall}>ts={ts}</span> : null}
-                      {ledgerEventId ? (
-                        <span style={styles.monoSmall}>ledgerEventId={ledgerEventId}</span>
-                      ) : eventId ? (
-                        <span style={styles.monoSmall}>eventId={eventId}</span>
+                      {ts ? (
+                        <span style={styles.kv}>
+                          <span style={styles.k}>ts</span>
+                          <span style={styles.vMono}>{ts}</span>
+                          <button
+                            type="button"
+                            style={styles.copyBtn}
+                            onClick={(ev) => {
+                              ev.preventDefault();
+                              ev.stopPropagation();
+                              copyToClipboard("ts", ts);
+                            }}
+                            title="Copy timestamp"
+                          >
+                            Copy
+                          </button>
+                        </span>
+                      ) : null}
+
+                      {idPrimary ? (
+                        <span style={styles.kv}>
+                          <span style={styles.k}>{idPrimaryLabel}</span>
+                          <span style={styles.vMono}>{idPrimary}</span>
+                          <button
+                            type="button"
+                            style={styles.copyBtn}
+                            onClick={(ev) => {
+                              ev.preventDefault();
+                              ev.stopPropagation();
+                              copyToClipboard(idPrimaryLabel, idPrimary);
+                            }}
+                            title={`Copy ${idPrimaryLabel}`}
+                          >
+                            Copy
+                          </button>
+                        </span>
                       ) : null}
                     </div>
                   </div>
                 </summary>
 
-                <div style={styles.itemMeta}>
-                  <div style={styles.miniRow}>
-                    <span style={styles.miniLabel}>Quick:</span>
-                    <span style={styles.monoSmall}>{headerBits.join("  •  ")}</span>
-                  </div>
+                <div style={styles.itemActions}>
+                  <button
+                    type="button"
+                    style={styles.actionBtn}
+                    onClick={(ev) => {
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                      copyToClipboard("raw-json", safeStringify(e));
+                    }}
+                    title="Copy raw JSON"
+                  >
+                    Copy JSON
+                  </button>
                 </div>
 
-                <pre style={styles.pre}>{safeStringify(e)}</pre>
+                <pre style={{ ...styles.pre, ...(dense ? styles.preDense : null) }}>{safeStringify(e)}</pre>
               </details>
             );
           })}
@@ -461,6 +605,24 @@ const styles = {
     background: "rgba(255,255,255,0.02)"
   },
   panelTitle: { fontSize: 14, fontWeight: 700, marginBottom: 12, opacity: 0.9 },
+
+  resultsHeader: {
+    display: "flex",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 12
+  },
+  toast: {
+    fontSize: 12,
+    opacity: 0.95,
+    border: "1px solid rgba(100,220,160,0.35)",
+    background: "rgba(100,220,160,0.10)",
+    padding: "6px 10px",
+    borderRadius: 999
+  },
+  toastMono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+
   field: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 },
   label: { fontSize: 12, opacity: 0.8 },
   input: {
@@ -479,6 +641,8 @@ const styles = {
     color: "#e6edf3",
     outline: "none"
   },
+  toggleRow: { display: "flex", gap: 10, alignItems: "center" },
+
   row: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
   button: {
     padding: "10px 12px",
@@ -531,6 +695,8 @@ const styles = {
     padding: 10,
     background: "rgba(0,0,0,0.18)"
   },
+  itemDense: { padding: 8 },
+
   summary: { cursor: "pointer", display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap" },
   badge: {
     display: "inline-block",
@@ -542,12 +708,53 @@ const styles = {
     fontWeight: 700,
     marginTop: 1
   },
-  summaryCols: { display: "flex", flexDirection: "column", gap: 4, minWidth: 0, flex: "1 1 auto" },
+  summaryCols: { display: "flex", flexDirection: "column", gap: 6, minWidth: 0, flex: "1 1 auto" },
   summaryLine: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
 
-  itemMeta: { marginTop: 8 },
-  miniRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
-  miniLabel: { fontSize: 12, opacity: 0.75 },
+  kv: {
+    display: "inline-flex",
+    gap: 6,
+    alignItems: "center",
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: "rgba(255,255,255,0.03)",
+    padding: "4px 8px",
+    borderRadius: 999,
+    maxWidth: "100%"
+  },
+  k: { fontSize: 12, opacity: 0.75 },
+  vMono: {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    fontSize: 12,
+    opacity: 0.95,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    maxWidth: 520
+  },
+  copyBtn: {
+    padding: "3px 8px",
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(255,255,255,0.06)",
+    color: "#e6edf3",
+    cursor: "pointer",
+    fontSize: 12
+  },
+
+  itemActions: {
+    marginTop: 10,
+    display: "flex",
+    justifyContent: "flex-end"
+  },
+  actionBtn: {
+    padding: "6px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(0,0,0,0.18)",
+    color: "#e6edf3",
+    cursor: "pointer",
+    fontSize: 12
+  },
 
   pre: {
     margin: 0,
@@ -559,6 +766,7 @@ const styles = {
     fontSize: 12,
     lineHeight: 1.35
   },
+  preDense: { padding: 10, marginTop: 8 },
 
   error: {
     border: "1px solid rgba(255,80,80,0.35)",
