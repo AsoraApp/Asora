@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
+import { usePersistedString } from "../_ui/useViewState.jsx";
 import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
 import SavedViewsBar from "@/app/ui/SavedViewsBar";
 
@@ -45,22 +46,6 @@ function downloadCsv(filename, header, rows) {
   URL.revokeObjectURL(url);
 }
 
-function safeReadLocalStorage(key) {
-  try {
-    return localStorage.getItem(key) || "";
-  } catch {
-    return "";
-  }
-}
-function safeWriteLocalStorage(key, value) {
-  try {
-    if (!value) localStorage.removeItem(key);
-    else localStorage.setItem(key, value);
-  } catch {
-    // ignore
-  }
-}
-
 export default function InventorySnapshotPage() {
   const { isCompact } = useDensity();
   const s = isCompact ? compact : styles;
@@ -70,16 +55,11 @@ export default function InventorySnapshotPage() {
   const [events, setEvents] = useState([]);
   const [computedAtUtc, setComputedAtUtc] = useState("");
 
-  // Focus itemId (optional)
-  const [focusItemId, setFocusItemId] = useState("");
+  // Focus itemId (optional) — persisted locally
+  const [focusItemId, setFocusItemId] = usePersistedString(FOCUS_STORE_KEY, "");
 
   // Paging
   const [page, setPage] = useState(1);
-
-  useEffect(() => {
-    const v = safeReadLocalStorage(FOCUS_STORE_KEY);
-    if (v) setFocusItemId(v);
-  }, []);
 
   async function load({ force = false } = {}) {
     setLoading(true);
@@ -171,16 +151,16 @@ export default function InventorySnapshotPage() {
 
   function exportCsvAll() {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `asora_inventory_snapshot_${ts}${focus ? `_focus_${focus.replace(/[^a-zA-Z0-9_-]/g, "_")}` : ""}.csv`;
+    const safeFocus = focus ? `_focus_${focus.replace(/[^a-zA-Z0-9_-]/g, "_")}` : "";
+    const filename = `asora_inventory_snapshot_${ts}${safeFocus}.csv`;
     const header = ["itemId", "derivedQuantity"];
-    const rows = (focus ? filteredRows : derived.rows).map((r) => [r.itemId, r.derivedQuantity]);
+    const rows = filteredRows.map((r) => [r.itemId, r.derivedQuantity]);
     downloadCsv(filename, header, rows);
   }
 
   function applySaved(value) {
     const v = (value || "").trim();
     setFocusItemId(v);
-    safeWriteLocalStorage(FOCUS_STORE_KEY, v);
   }
 
   return (
@@ -214,11 +194,7 @@ export default function InventorySnapshotPage() {
             <input
               style={s.input}
               value={focusItemId}
-              onChange={(e) => {
-                const v = e.target.value;
-                setFocusItemId(v);
-                safeWriteLocalStorage(FOCUS_STORE_KEY, v);
-              }}
+              onChange={(e) => setFocusItemId(e.target.value)}
               placeholder="exact itemId (filters table)"
             />
           </label>
@@ -242,17 +218,14 @@ export default function InventorySnapshotPage() {
         </div>
 
         <div style={{ marginTop: 12 }}>
-          <SavedViewsBar
-            storageKey={SAVED_VIEWS_KEY}
-            valueLabel="focus itemId"
-            currentValue={focus}
-            onApply={applySaved}
-          />
+          <SavedViewsBar storageKey={SAVED_VIEWS_KEY} valueLabel="focus itemId" currentValue={focus} onApply={applySaved} />
         </div>
 
         {err ? <div style={s.err}>Error: {err}</div> : null}
         {filteredRows.length === 0 && !loading ? (
-          <div style={s.empty}>{focus ? "No derived rows for this focus itemId." : "No derived inventory rows to display."}</div>
+          <div style={s.empty}>
+            {focus ? "No derived rows for this focus itemId." : "No derived inventory rows to display."}
+          </div>
         ) : null}
 
         {filteredRows.length > 0 ? (
@@ -264,11 +237,7 @@ export default function InventorySnapshotPage() {
               Page <span style={s.mono}>{page}</span> / <span style={s.mono}>{pageCount}</span> (page size{" "}
               <span style={s.mono}>{PAGE_SIZE}</span>, showing <span style={s.mono}>{visible.length}</span>)
             </div>
-            <button
-              style={s.pagerBtn}
-              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-              disabled={page >= pageCount}
-            >
+            <button style={s.pagerBtn} onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount}>
               Next
             </button>
             <button
@@ -340,26 +309,8 @@ const styles = {
   card: { border: "1px solid #e5e5e5", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fff" },
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" },
 
-  button: {
-    padding: "8px 12px",
-    borderRadius: 10,
-    border: "1px solid #111",
-    background: "#111",
-    color: "#fff",
-    cursor: "pointer",
-    fontSize: 13,
-    height: 34,
-  },
-  buttonSecondary: {
-    padding: "8px 12px",
-    borderRadius: 10,
-    border: "1px solid #bbb",
-    background: "#fff",
-    color: "#111",
-    cursor: "pointer",
-    fontSize: 13,
-    height: 34,
-  },
+  button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
+  buttonSecondary: { padding: "8px 12px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", color: "#111", cursor: "pointer", fontSize: 13, height: 34 },
 
   label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
   input: { width: 280, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
