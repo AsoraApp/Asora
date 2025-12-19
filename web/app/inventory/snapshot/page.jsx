@@ -12,6 +12,7 @@ export const runtime = "edge";
 
 const PAGE_SIZE = 500;
 
+// Snapshot focus (local-only)
 const FOCUS_STORE_KEY = "asora_view:snapshot:focusItemId";
 const SAVED_VIEWS_KEY = "asora_saved_views:snapshot:focusItemId";
 
@@ -55,7 +56,7 @@ export default function InventorySnapshotPage() {
   const [events, setEvents] = useState([]);
   const [computedAtUtc, setComputedAtUtc] = useState("");
 
-  // Focus itemId (optional) — persisted locally
+  // Focus itemId (optional, persisted)
   const [focusItemId, setFocusItemId] = usePersistedString(FOCUS_STORE_KEY, "");
 
   // Paging
@@ -134,7 +135,7 @@ export default function InventorySnapshotPage() {
 
   const filteredRows = useMemo(() => {
     if (!focus) return derived.rows;
-    // Exact match only (deterministic, no fuzzy)
+    // Exact match only (deterministic)
     return derived.rows.filter((r) => r.itemId === focus);
   }, [derived.rows, focus]);
 
@@ -149,10 +150,11 @@ export default function InventorySnapshotPage() {
     return filteredRows.slice(0, end);
   }, [filteredRows, page]);
 
-  function exportCsvAll() {
+  function exportCsv() {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const safeFocus = focus ? `_focus_${focus.replace(/[^a-zA-Z0-9_-]/g, "_")}` : "";
     const filename = `asora_inventory_snapshot_${ts}${safeFocus}.csv`;
+
     const header = ["itemId", "derivedQuantity"];
     const rows = filteredRows.map((r) => [r.itemId, r.derivedQuantity]);
     downloadCsv(filename, header, rows);
@@ -185,7 +187,7 @@ export default function InventorySnapshotPage() {
             Recompute (force)
           </button>
 
-          <button style={s.buttonSecondary} onClick={exportCsvAll} disabled={derived.rows.length === 0}>
+          <button style={s.buttonSecondary} onClick={exportCsv} disabled={loading || filteredRows.length === 0}>
             Export CSV
           </button>
 
@@ -201,8 +203,8 @@ export default function InventorySnapshotPage() {
 
           <div style={s.meta}>
             Items: <span style={s.mono}>{derived.rows.length}</span> | Focus rows:{" "}
-            <span style={s.mono}>{filteredRows.length}</span> | Events: <span style={s.mono}>{events.length}</span> | Computed
-            at (UTC): <span style={s.mono}>{computedAtUtc || "—"}</span>
+            <span style={s.mono}>{filteredRows.length}</span> | Events: <span style={s.mono}>{events.length}</span> |
+            Computed at (UTC): <span style={s.mono}>{computedAtUtc || "—"}</span>
             {focus ? (
               <>
                 {" "}
@@ -218,14 +220,17 @@ export default function InventorySnapshotPage() {
         </div>
 
         <div style={{ marginTop: 12 }}>
-          <SavedViewsBar storageKey={SAVED_VIEWS_KEY} valueLabel="focus itemId" currentValue={focus} onApply={applySaved} />
+          <SavedViewsBar
+            storageKey={SAVED_VIEWS_KEY}
+            valueLabel="focus itemId"
+            currentValue={focus}
+            onApply={applySaved}
+          />
         </div>
 
         {err ? <div style={s.err}>Error: {err}</div> : null}
         {filteredRows.length === 0 && !loading ? (
-          <div style={s.empty}>
-            {focus ? "No derived rows for this focus itemId." : "No derived inventory rows to display."}
-          </div>
+          <div style={s.empty}>{focus ? "No derived rows for this focus itemId." : "No derived inventory rows to display."}</div>
         ) : null}
 
         {filteredRows.length > 0 ? (
@@ -237,7 +242,11 @@ export default function InventorySnapshotPage() {
               Page <span style={s.mono}>{page}</span> / <span style={s.mono}>{pageCount}</span> (page size{" "}
               <span style={s.mono}>{PAGE_SIZE}</span>, showing <span style={s.mono}>{visible.length}</span>)
             </div>
-            <button style={s.pagerBtn} onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount}>
+            <button
+              style={s.pagerBtn}
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              disabled={page >= pageCount}
+            >
               Next
             </button>
             <button
