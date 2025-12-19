@@ -1,81 +1,122 @@
+// web/app/_ui/AdminHeader.jsx
 "use client";
 
 import Link from "next/link";
+import { useMemo } from "react";
+import { getStoredDevToken } from "@/lib/asoraFetch";
 
-export default function AdminHeader({ title, subtitle, tenantId, build, freshnessBar }) {
+const NAV = [
+  { href: "/ledger", label: "Ledger" },
+  { href: "/inventory/items", label: "Items" },
+  { href: "/inventory/snapshot", label: "Snapshot" },
+  { href: "/inventory/movements", label: "Movements" },
+  { href: "/inventory/reconciliation", label: "Reconciliation" },
+  { href: "/inventory/anomalies", label: "Anomalies" },
+  { href: "/inventory/exports", label: "Exports" },
+];
+
+export default function AdminHeader({
+  title,
+  subtitle,
+  buildStamp = "",
+  children,
+}) {
+  const devToken = useMemo(() => getStoredDevToken(), []);
+
   return (
-    <header style={styles.header}>
-      <div style={styles.top}>
-        <div>
-          <div style={styles.title}>{title}</div>
+    <header style={styles.wrap}>
+      <div style={styles.topRow}>
+        <div style={styles.left}>
+          <div style={styles.titleRow}>
+            <div style={styles.title}>{title || "Asora"}</div>
+            {buildStamp ? <div style={styles.build}>{buildStamp}</div> : null}
+          </div>
           {subtitle ? <div style={styles.sub}>{subtitle}</div> : null}
         </div>
 
-        <div style={styles.meta}>
-          <div style={styles.metaRow}>
-            <span style={styles.metaLabel}>Tenant</span>
-            <span style={styles.metaValue}>{tenantId || "—"}</span>
+        <div style={styles.right}>
+          <div style={styles.tenantBox}>
+            <div style={styles.tenantLabel}>Tenant (dev_token)</div>
+            <div style={styles.tenantValue}>{devToken || "(none)"}</div>
           </div>
-          {build ? (
-            <div style={styles.metaRow}>
-              <span style={styles.metaLabel}>Build</span>
-              <span style={styles.metaValue}>{build}</span>
-            </div>
-          ) : null}
         </div>
       </div>
 
       <nav style={styles.nav}>
-        <NavLink href="/ledger">/ledger</NavLink>
-        <NavLink href="/inventory/items">/inventory/items</NavLink>
-        <NavLink href="/inventory/snapshot">/inventory/snapshot</NavLink>
-        <NavLink href="/inventory/movements">/inventory/movements</NavLink>
-        <NavLink href="/inventory/reconciliation">/inventory/reconciliation</NavLink>
-        <NavLink href="/inventory/anomalies">/inventory/anomalies</NavLink>
-        <NavLink href="/inventory/exports">/inventory/exports</NavLink>
+        {NAV.map((n) => (
+          <Link key={n.href} href={n.href} style={styles.navLink}>
+            {n.label}
+          </Link>
+        ))}
       </nav>
 
-      {freshnessBar ? <div style={styles.freshness}>{freshnessBar}</div> : null}
+      {children ? <div style={styles.slot}>{children}</div> : null}
     </header>
   );
 }
 
-function NavLink({ href, children }) {
-  return (
-    <Link href={href} style={styles.link}>
-      {children}
-    </Link>
-  );
-}
-
 const styles = {
-  header: {
-    borderBottom: "1px solid rgba(0,0,0,0.08)",
-    paddingBottom: 12,
-    marginBottom: 14,
+  wrap: {
+    maxWidth: 1200,
+    margin: "0 auto 14px auto",
+    padding: 16,
+    borderRadius: 14,
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.10)",
+    color: "#e6edf3",
   },
-  top: {
+  topRow: {
     display: "flex",
     justifyContent: "space-between",
     gap: 12,
     flexWrap: "wrap",
     alignItems: "flex-start",
   },
-  title: { fontSize: 20, fontWeight: 800 },
-  sub: { marginTop: 4, fontSize: 12, opacity: 0.8, lineHeight: 1.35 },
-  meta: { textAlign: "right", fontSize: 12, opacity: 0.9 },
-  metaRow: { display: "flex", gap: 8, justifyContent: "flex-end" },
-  metaLabel: { opacity: 0.7 },
-  metaValue: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+  left: { minWidth: 280, flex: "1 1 auto" },
+  titleRow: { display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" },
+  title: { fontSize: 18, fontWeight: 850, letterSpacing: 0.2 },
+  build: {
+    fontSize: 12,
+    opacity: 0.85,
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: "rgba(0,0,0,0.18)",
+    padding: "4px 8px",
+    borderRadius: 999,
+  },
+  sub: { marginTop: 6, fontSize: 13, opacity: 0.82, lineHeight: 1.35 },
 
-  nav: { display: "flex", gap: 12, flexWrap: "wrap", marginTop: 10 },
-  link: {
+  right: { display: "flex", alignItems: "flex-start", justifyContent: "flex-end" },
+  tenantBox: {
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: "rgba(0,0,0,0.18)",
+    padding: "8px 10px",
+    borderRadius: 12,
+    minWidth: 220,
+  },
+  tenantLabel: { fontSize: 11, opacity: 0.7, marginBottom: 4 },
+  tenantValue: { fontSize: 13, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+
+  nav: {
+    display: "flex",
+    gap: 10,
+    flexWrap: "wrap",
+    marginTop: 12,
+    paddingTop: 12,
+    borderTop: "1px solid rgba(255,255,255,0.08)",
+  },
+  navLink: {
+    padding: "7px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.03)",
+    color: "#e6edf3",
     textDecoration: "none",
     fontSize: 13,
-    padding: "6px 8px",
-    borderRadius: 10,
-    border: "1px solid rgba(0,0,0,0.10)",
-    color: "inherit",
   },
-  freshness: { marginTop: 10 },
+  slot: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTop: "1px solid rgba(255,255,255,0.08)",
+  },
 };
