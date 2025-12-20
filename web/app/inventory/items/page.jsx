@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
-import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
+import { useDensity } from "../_ui/CompactBar.jsx";
 import { usePersistedString } from "../_ui/useViewState.jsx";
 
 export const runtime = "edge";
@@ -108,11 +108,6 @@ export default function InventoryItemsPage() {
 
   return (
     <main style={s.shell}>
-      <AdminHeader
-        title="Inventory Items"
-        subtitle="Read-only inventory item list. Focus is saved locally."
-      />
-
       <section style={s.card}>
         <div style={s.controls}>
           <label style={s.label}>
@@ -169,12 +164,22 @@ export default function InventoryItemsPage() {
             <tbody>
               {filtered.map((r) => (
                 <tr key={r.itemId}>
-                  <td style={s.td}><span style={s.mono}>{r.itemId}</span></td>
-                  <td style={s.tdRight}><span style={s.mono}>{r.quantity ?? "—"}</span></td>
                   <td style={s.td}>
-                    <Link style={s.link} href={itemHref(r.itemId)}>Drill-down</Link>{" "}
-                    <Link style={s.linkSecondary} href={movementsHref(r.itemId)}>Movements</Link>{" "}
-                    <Link style={s.linkSecondary} href={reconciliationHref(r.itemId)}>Reconcile</Link>
+                    <span style={s.mono}>{r.itemId}</span>
+                  </td>
+                  <td style={s.tdRight}>
+                    <span style={s.mono}>{r.quantity ?? "—"}</span>
+                  </td>
+                  <td style={s.td}>
+                    <Link style={s.link} href={itemHref(r.itemId)}>
+                      Drill-down
+                    </Link>{" "}
+                    <Link style={s.linkSecondary} href={movementsHref(r.itemId)}>
+                      Movements
+                    </Link>{" "}
+                    <Link style={s.linkSecondary} href={reconciliationHref(r.itemId)}>
+                      Reconcile
+                    </Link>
                   </td>
                 </tr>
               ))}
@@ -192,7 +197,7 @@ const styles = {
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
   label: { display: "flex", flexDirection: "column", fontSize: 13 },
   input: { width: 280, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc" },
-  button: { padding: "8px 12px", borderRadius: 10, background: "#111", color: "#fff" },
+  button: { padding: "8px 12px", borderRadius: 10, background: "#111", color: "#fff", border: "none" },
   quickLinks: { display: "flex", gap: 10 },
   link: { color: "#0b57d0", textDecoration: "none" },
   linkSecondary: { color: "#444", textDecoration: "none" },
@@ -201,10 +206,10 @@ const styles = {
   empty: { color: "#666" },
   tableWrap: { overflowX: "auto", marginTop: 12 },
   table: { width: "100%", borderCollapse: "collapse" },
-  th: { textAlign: "left", borderBottom: "1px solid #eee" },
-  thRight: { textAlign: "right", borderBottom: "1px solid #eee" },
-  td: { padding: "8px" },
-  tdRight: { padding: "8px", textAlign: "right" },
+  th: { textAlign: "left", borderBottom: "1px solid #eee", padding: "8px" },
+  thRight: { textAlign: "right", borderBottom: "1px solid #eee", padding: "8px" },
+  td: { padding: "8px", borderBottom: "1px solid #f2f2f2" },
+  tdRight: { padding: "8px", textAlign: "right", borderBottom: "1px solid #f2f2f2" },
   mono: { fontFamily: "ui-monospace, monospace" },
 };
 
