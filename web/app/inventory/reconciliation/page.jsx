@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { asoraGetJson } from "@/lib/asoraFetch";
-import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
+import { useDensity } from "../_ui/CompactBar.jsx";
 import { usePersistedString } from "../_ui/useViewState.jsx";
 import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
+import AdminHeader from "../_ui/AdminHeader.jsx";
 import LedgerFreshnessBar from "../_ui/LedgerFreshnessBar.jsx";
 import IntegrityFooter from "../_ui/IntegrityFooter.jsx";
 import { downloadCsvFromRows } from "../_ui/csv.js";
@@ -49,7 +50,7 @@ export default function InventoryReconciliationPage() {
       ]);
 
       const ev = Array.isArray(ledger?.events) ? ledger.events : [];
-      const it = Array.isArray(inv?.items) ? inv.items : inv?.data?.items || [];
+      const it = Array.isArray(inv?.items) ? inv.items : Array.isArray(inv?.data?.items) ? inv.data.items : [];
 
       setEvents(ev);
       setItems(it);
@@ -58,6 +59,7 @@ export default function InventoryReconciliationPage() {
       setErr(e?.message || "Failed to reconcile inventory.");
       setEvents([]);
       setItems([]);
+      setLastFetchedUtc("");
     } finally {
       setLoading(false);
     }
@@ -65,6 +67,7 @@ export default function InventoryReconciliationPage() {
 
   useEffect(() => {
     load({ force: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const focus = (focusItemId || "").trim();
@@ -90,18 +93,19 @@ export default function InventoryReconciliationPage() {
 
     const rows = [];
     for (const it of items) {
-      const itemId = it?.itemId;
+      const itemId = typeof it?.itemId === "string" ? it.itemId : "";
       if (!itemId) continue;
       if (focus && itemId !== focus) continue;
 
       const ledgerQty = ledgerTotals.get(itemId) || 0;
-      const invQty = typeof it?.quantity === "number" ? it.quantity : null;
+      const invQty = typeof it?.quantity === "number" && Number.isFinite(it.quantity) ? it.quantity : null;
       const delta = invQty === null ? null : ledgerQty - invQty;
 
       rows.push({ itemId, ledgerQty, invQty, delta });
     }
 
     rows.sort((a, b) => a.itemId.localeCompare(b.itemId));
+
     return {
       rows,
       skipped: [
@@ -133,13 +137,17 @@ export default function InventoryReconciliationPage() {
 
   return (
     <main style={s.shell}>
-      <CompactBar here="Reconciliation" />
-
-      <LedgerFreshnessBar
-        lastFetchedUtc={lastFetchedUtc}
-        cacheStatus={cacheStatus}
-        onRefresh={() => load({ force: false })}
-        onForceRefresh={() => load({ force: true })}
+      <AdminHeader
+        title="Inventory Reconciliation"
+        subtitle="Ledger-derived quantities compared to inventory records."
+        freshnessSlot={
+          <LedgerFreshnessBar
+            lastFetchedUtc={lastFetchedUtc}
+            cacheStatus={cacheStatus}
+            onRefresh={() => load({ force: false })}
+            onForceRefresh={() => load({ force: true })}
+          />
+        }
       />
 
       <section style={s.card}>
@@ -168,6 +176,24 @@ export default function InventoryReconciliationPage() {
         {err ? <div style={s.err}>Error: {err}</div> : null}
         {visible.length === 0 && !loading ? <div style={s.empty}>No reconciliation deltas.</div> : null}
 
+        {derived.rows.length > 0 ? (
+          <div style={s.pagerRow}>
+            <button style={s.pagerBtn} onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
+              Prev
+            </button>
+            <div style={s.pagerText}>
+              Page <span style={s.mono}>{page}</span> / <span style={s.mono}>{pageCount}</span>
+            </div>
+            <button
+              style={s.pagerBtn}
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              disabled={page >= pageCount}
+            >
+              Next
+            </button>
+          </div>
+        ) : null}
+
         <div style={s.tableWrap}>
           <table style={s.table}>
             <thead>
@@ -182,12 +208,22 @@ export default function InventoryReconciliationPage() {
             <tbody>
               {visible.map((r) => (
                 <tr key={r.itemId}>
-                  <td style={s.td}><span style={s.mono}>{r.itemId}</span></td>
-                  <td style={s.tdRight}><span style={s.mono}>{r.ledgerQty}</span></td>
-                  <td style={s.tdRight}><span style={s.mono}>{r.invQty ?? "—"}</span></td>
-                  <td style={s.tdRight}><span style={s.mono}>{r.delta ?? "—"}</span></td>
                   <td style={s.td}>
-                    <Link style={s.link} href={itemHref(r.itemId)}>Drill-down</Link>
+                    <span style={s.mono}>{r.itemId}</span>
+                  </td>
+                  <td style={s.tdRight}>
+                    <span style={s.mono}>{r.ledgerQty}</span>
+                  </td>
+                  <td style={s.tdRight}>
+                    <span style={s.mono}>{r.invQty ?? "—"}</span>
+                  </td>
+                  <td style={s.tdRight}>
+                    <span style={s.mono}>{r.delta ?? "—"}</span>
+                  </td>
+                  <td style={s.td}>
+                    <Link style={s.link} href={itemHref(r.itemId)}>
+                      Drill-down
+                    </Link>
                   </td>
                 </tr>
               ))}
@@ -195,11 +231,7 @@ export default function InventoryReconciliationPage() {
           </table>
         </div>
 
-        <IntegrityFooter
-          ledgerEventsProcessed={derived.processed}
-          skipped={derived.skipped}
-          renderUtc={new Date().toISOString()}
-        />
+        <IntegrityFooter ledgerEventsProcessed={derived.processed} skipped={derived.skipped} renderUtc={new Date().toISOString()} />
       </section>
     </main>
   );
@@ -215,6 +247,9 @@ const styles = {
   buttonSecondary: { padding: "8px 12px", borderRadius: 10, border: "1px solid #bbb", background: "#fff" },
   err: { color: "#b00020" },
   empty: { color: "#666" },
+  pagerRow: { display: "flex", gap: 10, marginTop: 10, alignItems: "center", flexWrap: "wrap" },
+  pagerBtn: { padding: "6px 10px" },
+  pagerText: { fontSize: 13 },
   tableWrap: { overflowX: "auto", marginTop: 12 },
   table: { width: "100%", borderCollapse: "collapse" },
   th: { textAlign: "left", borderBottom: "1px solid #eee" },
