@@ -1,3 +1,5 @@
 "use client";
 
-export { default } from "../../_ui/LedgerFreshnessBar.jsx";
+export const runtime = "edge";
+
+export { default } from "@/app/_ui/LedgerFreshnessBar.jsx";
