@@ -11,135 +11,238 @@ import { notificationsFetchRouter } from "./notifications.worker.mjs";
 
 import { loadTenantCollection } from "../storage/jsonStore.worker.mjs";
 
-import {
-  authorizeRequestOrThrow,
-  authzErrorEnvelope,
-  authzDenialReason,
-} from "../auth/authorization.worker.mjs";
-
-const BUILD_STAMP = "u11-authorization-2025-12-20T00:00Z"; // CHANGE THIS ON EACH DEPLOY
+const BUILD_STAMP = "u11-authorization-fix-2025-12-20T00:00Z"; // CHANGE THIS ON EACH DEPLOY
 
 function json(statusCode, body, headersObj) {
   const h = new Headers(headersObj || {});
-  h.set("content-type", "application/json; charset=utf-8");
+  h.set("Content-Type", "application/json; charset=utf-8");
   return new Response(JSON.stringify(body), { status: statusCode, headers: h });
 }
 
-function isPublicPath(pathname) {
-  // U10 preserved: / and /__build are public
-  return pathname === "/" || pathname === "/__build";
+function parsePath(pathname) {
+  return (pathname || "/").replace(/\/+$/g, "") || "/";
 }
 
-function isV1Path(pathname) {
-  return pathname.startsWith("/v1/");
+function normalizePath(pathname) {
+  // compatibility shims
+  if (pathname === "/auth/me") return "/api/auth/me";
+  if (pathname.startsWith("/v1/")) return "/api/" + pathname.slice("/v1/".length);
+  return pathname;
 }
 
-function safePath(req) {
+function methodNotAllowed(baseHeaders) {
+  return json(405, { error: "METHOD_NOT_ALLOWED", code: "METHOD_NOT_ALLOWED", details: null }, baseHeaders);
+}
+
+function notFound(baseHeaders) {
+  return json(404, { error: "NOT_FOUND", code: "ROUTE_NOT_FOUND", details: null }, baseHeaders);
+}
+
+function requireAuth(ctx, baseHeaders) {
+  if (!ctx || !ctx.session || ctx.session.isAuthenticated !== true) {
+    return json(401, { error: "UNAUTHORIZED", code: "AUTH_REQUIRED", details: null }, baseHeaders);
+  }
+  if (!ctx.tenantId) {
+    return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
+  }
+  return null;
+}
+
+async function readJson(request) {
+  const text = await request.text();
+  if (!text) return null;
   try {
-    return new URL(req.url).pathname;
+    return JSON.parse(text);
   } catch {
-    return "";
+    return "__INVALID_JSON__";
   }
 }
 
-export async function handleFetch(req, env, ctx) {
-  const requestId = getOrCreateRequestIdFromHeaders(req.headers);
-  const url = new URL(req.url);
-  const pathname = url.pathname;
+function isAuthedTenantScoped(ctx) {
+  return !!(ctx && ctx.session && ctx.session.isAuthenticated === true && ctx.tenantId);
+}
 
-  // Public routes (no auth, no tenant)
-  if (isPublicPath(pathname)) {
-    if (pathname === "/__build") return json(200, { ok: true, build: BUILD_STAMP, requestId });
-    return new Response("ok", { status: 200 });
+// Keep ctx creation defensive
+function safeCreateCtx({ requestId, session }) {
+  try {
+    const c = createRequestContext({ requestId, session });
+    const tenantId = c?.tenantId || session?.tenantId || null;
+    return { ...(c || {}), requestId, session, tenantId };
+  } catch {
+    return {
+      requestId,
+      session: session || { isAuthenticated: false, token: null, tenantId: null, authLevel: null },
+      tenantId: session?.tenantId || null,
+    };
+  }
+}
+
+export async function handleFetch(request, env, cfctx) {
+  globalThis.__ASORA_ENV__ = env || {};
+
+  const u = new URL(request.url);
+  const rawPath = parsePath(u.pathname);
+  const pathname = normalizePath(rawPath);
+  const method = (request.method || "GET").toUpperCase();
+
+  const requestId = getOrCreateRequestIdFromHeaders(request.headers);
+  const baseHeaders = { "X-Request-Id": requestId };
+
+  // Public
+  if (pathname === "/__build") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    return json(200, { ok: true, build: BUILD_STAMP, requestId }, baseHeaders);
+  }
+  if (pathname === "/") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    return json(200, { ok: true, service: "asora", runtime: "cloudflare-worker", requestId }, baseHeaders);
   }
 
-  // All /v1/* must be authenticated (U10)
-  const session = await resolveSessionFromHeaders(req, env);
+  // Session (THIS is the correct call shape)
+  const session = resolveSessionFromHeaders(request.headers, u);
 
-  const rctx = createRequestContext({
-    requestId,
-    now: new Date().toISOString(),
-    session,
+  // Context
+  const ctx = safeCreateCtx({ requestId, session });
+
+  // Audit base request
+  emitAudit(ctx, {
+    eventCategory: "SYSTEM",
+    eventType: "HTTP_REQUEST",
+    objectType: "http_request",
+    objectId: null,
+    decision: "SYSTEM",
+    reasonCode: "RECEIVED",
+    factsSnapshot: { method, path: pathname },
   });
 
-  // Emit a base audit for every authenticated request (U10 behavior)
-  // (If your emitAudit already happens elsewhere, keeping this is fine—duplicate audits are undesirable,
-  // but better than missing; if you already emit elsewhere, remove one copy.)
-  try {
-    await emitAudit(env, {
-      type: "http.request",
-      requestId,
-      tenantId: session?.tenantId ?? null,
-      actorId: session?.actorId ?? null,
-      authLevel: session?.authLevel ?? null,
-      method: (req.method || "GET").toUpperCase(),
-      route: safePath(req),
-      ok: true,
-      at: rctx.now,
-      details: null,
-    });
-  } catch {
-    // Observability must never break execution paths
+  // Auth route
+  if (pathname === "/api/auth/me") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+
+    const denied = requireAuth(ctx, baseHeaders);
+    if (denied) {
+      emitAudit(ctx, {
+        eventCategory: "SECURITY",
+        eventType: "AUTH_REJECTED",
+        objectType: "auth",
+        objectId: null,
+        decision: "DENY",
+        reasonCode: denied.status === 403 ? "TENANT_REQUIRED" : "AUTH_REQUIRED",
+        factsSnapshot: { method, path: pathname },
+      });
+      return denied;
+    }
+    return authMeFetch(ctx, baseHeaders);
   }
 
-  // U11: Authorization gate for ALL /v1/* execution paths
-  if (isV1Path(pathname)) {
-    try {
-      authorizeRequestOrThrow({ req, session });
-    } catch (err) {
-      // Deterministic denial + audit
-      try {
-        await emitAudit(env, {
-          type: "authz.denied",
-          requestId,
-          tenantId: session?.tenantId ?? null,
-          actorId: session?.actorId ?? null,
-          authLevel: session?.authLevel ?? null,
-          method: (req.method || "GET").toUpperCase(),
-          route: safePath(req),
-          ok: false,
-          at: rctx.now,
-          details: {
-            reason: authzDenialReason(err),
-            envelope: authzErrorEnvelope(err),
-          },
-        });
-      } catch {
-        // never throw from audit
-      }
-
-      return json(403, authzErrorEnvelope(err), { "x-request-id": requestId });
+  // All /api/* require auth (U10 rule)
+  if (pathname.startsWith("/api/")) {
+    const denied = requireAuth(ctx, baseHeaders);
+    if (denied) {
+      emitAudit(ctx, {
+        eventCategory: "SECURITY",
+        eventType: "AUTH_REJECTED",
+        objectType: "auth",
+        objectId: null,
+        decision: "DENY",
+        reasonCode: denied.status === 403 ? "TENANT_REQUIRED" : "AUTH_REQUIRED",
+        factsSnapshot: { method, path: pathname },
+      });
+      return denied;
     }
   }
 
-  // Tenant-scoped storage access (U10+)
-  // loadTenantCollection may assume tenantId exists; U10 guarantees authenticated sessions always include tenantId.
-  const tenant = await loadTenantCollection(env, session.tenantId);
-
-  // Route dispatch (NO new endpoints in U11)
-  // Auth
-  if (pathname === "/v1/auth/me") {
-    return authMeFetch(req, env, rctx);
+  // Read endpoints (existing behavior)
+  if (pathname === "/api/inventory/items") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    const items = await loadTenantCollection(ctx.tenantId, "items.json", []);
+    return json(200, { items: Array.isArray(items) ? items : [] }, baseHeaders);
   }
 
-  // Ledger read routes likely live elsewhere in your repo; keep existing behavior.
-  // Ledger write: POST /v1/ledger/events
-  if (pathname === "/v1/ledger/events" && (req.method || "GET").toUpperCase() === "POST") {
-    return writeLedgerEventFromJson(req, env, rctx, tenant);
+  if (pathname === "/api/inventory/categories") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    const categories = await loadTenantCollection(ctx.tenantId, "categories.json", []);
+    return json(200, { categories: Array.isArray(categories) ? categories : [] }, baseHeaders);
   }
 
-  // Alerts / Notifications routers
-  if (pathname.startsWith("/v1/alerts/")) {
-    return alertsFetchRouter(req, env, rctx, tenant);
-  }
-  if (pathname.startsWith("/v1/notifications/")) {
-    return notificationsFetchRouter(req, env, rctx, tenant);
+  if (pathname === "/api/inventory/hubs") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    const hubs = await loadTenantCollection(ctx.tenantId, "hubs.json", []);
+    return json(200, { hubs: Array.isArray(hubs) ? hubs : [] }, baseHeaders);
   }
 
-  // Fallthrough: no invented endpoints
-  return json(
-    404,
-    { error: "NOT_FOUND", code: "NOT_FOUND", details: { route: pathname } },
-    { "x-request-id": requestId },
-  );
+  if (pathname === "/api/inventory/bins") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    const bins = await loadTenantCollection(ctx.tenantId, "bins.json", []);
+    return json(200, { bins: Array.isArray(bins) ? bins : [] }, baseHeaders);
+  }
+
+  if (pathname === "/api/inventory/vendors") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    const vendors = await loadTenantCollection(ctx.tenantId, "vendors.json", []);
+    return json(200, { vendors: Array.isArray(vendors) ? vendors : [] }, baseHeaders);
+  }
+
+  // Ledger write
+  if (pathname === "/api/ledger/events") {
+    // FIX: authLevel lives on ctx.session (not ctx)
+    if (ctx?.session?.authLevel !== "dev") {
+      emitAudit(ctx, {
+        eventCategory: "SECURITY",
+        eventType: "AUTHZ_DENIED",
+        objectType: "ledger_write",
+        objectId: "/api/ledger/events",
+        decision: "DENY",
+        reasonCode: "AUTHZ_DENIED",
+        factsSnapshot: { authLevel: ctx?.session?.authLevel ?? null },
+      });
+      return json(403, { error: "FORBIDDEN", code: "AUTHZ_DENIED", details: null }, baseHeaders);
+    }
+
+    if (method !== "POST") return methodNotAllowed(baseHeaders);
+
+    const body = await readJson(request);
+    if (body === "__INVALID_JSON__") {
+      emitAudit(ctx, {
+        eventCategory: "SECURITY",
+        eventType: "VALIDATION_FAILED",
+        objectType: "request",
+        objectId: "/api/ledger/events",
+        decision: "DENY",
+        reasonCode: "INVALID_JSON",
+        factsSnapshot: { method, path: pathname },
+      });
+      return json(400, { error: "BAD_REQUEST", code: "INVALID_JSON", details: null }, baseHeaders);
+    }
+
+    return writeLedgerEventFromJson(ctx, body, baseHeaders, cfctx);
+  }
+
+  // Alerts / notifications (unchanged calling convention)
+  {
+    const r = await alertsFetchRouter(ctx, request, baseHeaders, cfctx);
+    if (r) return r;
+  }
+  {
+    const r = await notificationsFetchRouter(ctx, request, baseHeaders);
+    if (r) return r;
+  }
+
+  // Fallthrough
+  if (pathname.startsWith("/api/")) {
+    if (isAuthedTenantScoped(ctx)) {
+      emitAudit(ctx, {
+        eventCategory: "SECURITY",
+        eventType: "ROUTE_NOT_FOUND",
+        objectType: "http_route",
+        objectId: pathname,
+        decision: "DENY",
+        reasonCode: "ROUTE_NOT_FOUND",
+        factsSnapshot: { method, path: pathname },
+      });
+    }
+    return notFound(baseHeaders);
+  }
+
+  return notFound(baseHeaders);
 }
