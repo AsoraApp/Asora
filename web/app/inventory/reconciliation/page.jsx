@@ -6,8 +6,6 @@ import { asoraGetJson } from "@/lib/asoraFetch";
 import { useDensity } from "../_ui/CompactBar.jsx";
 import { usePersistedString } from "../_ui/useViewState.jsx";
 import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
-import AdminHeader from "../_ui/AdminHeader.jsx";
-import LedgerFreshnessBar from "../_ui/LedgerFreshnessBar.jsx";
 import IntegrityFooter from "../_ui/IntegrityFooter.jsx";
 import { downloadCsvFromRows } from "../_ui/csv.js";
 
@@ -30,36 +28,30 @@ export default function InventoryReconciliationPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [page, setPage] = useState(1);
-  const [lastFetchedUtc, setLastFetchedUtc] = useState("");
-  const [cacheStatus, setCacheStatus] = useState("cached");
 
   async function load({ force = false } = {}) {
     setLoading(true);
     setErr("");
     try {
-      if (force) {
-        clearLedgerCache();
-        setCacheStatus("fresh");
-      } else {
-        setCacheStatus("cached");
-      }
+      if (force) clearLedgerCache();
 
       const [ledger, inv] = await Promise.all([
         getLedgerEventsCached(asoraGetJson),
         asoraGetJson("/v1/inventory/items", {}),
       ]);
 
-      const ev = Array.isArray(ledger?.events) ? ledger.events : [];
-      const it = Array.isArray(inv?.items) ? inv.items : Array.isArray(inv?.data?.items) ? inv.data.items : [];
-
-      setEvents(ev);
-      setItems(it);
-      setLastFetchedUtc(new Date().toISOString());
+      setEvents(Array.isArray(ledger?.events) ? ledger.events : []);
+      setItems(
+        Array.isArray(inv?.items)
+          ? inv.items
+          : Array.isArray(inv?.data?.items)
+          ? inv.data.items
+          : []
+      );
     } catch (e) {
       setErr(e?.message || "Failed to reconcile inventory.");
       setEvents([]);
       setItems([]);
-      setLastFetchedUtc("");
     } finally {
       setLoading(false);
     }
@@ -67,7 +59,6 @@ export default function InventoryReconciliationPage() {
 
   useEffect(() => {
     load({ force: false });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const focus = (focusItemId || "").trim();
@@ -80,28 +71,38 @@ export default function InventoryReconciliationPage() {
     for (const e of events) {
       const itemId = typeof e?.itemId === "string" ? e.itemId : "";
       if (!itemId) {
-        skippedMissingItemId += 1;
+        skippedMissingItemId++;
         continue;
       }
+
       const q = e?.qtyDelta;
       if (typeof q !== "number" || !Number.isFinite(q)) {
-        skippedMissingQtyDelta += 1;
+        skippedMissingQtyDelta++;
         continue;
       }
+
       ledgerTotals.set(itemId, (ledgerTotals.get(itemId) || 0) + q);
     }
 
     const rows = [];
+
     for (const it of items) {
       const itemId = typeof it?.itemId === "string" ? it.itemId : "";
       if (!itemId) continue;
       if (focus && itemId !== focus) continue;
 
       const ledgerQty = ledgerTotals.get(itemId) || 0;
-      const invQty = typeof it?.quantity === "number" && Number.isFinite(it.quantity) ? it.quantity : null;
-      const delta = invQty === null ? null : ledgerQty - invQty;
+      const invQty =
+        typeof it?.quantity === "number" && Number.isFinite(it.quantity)
+          ? it.quantity
+          : null;
 
-      rows.push({ itemId, ledgerQty, invQty, delta });
+      rows.push({
+        itemId,
+        ledgerQty,
+        invQty,
+        delta: invQty === null ? null : ledgerQty - invQty,
+      });
     }
 
     rows.sort((a, b) => a.itemId.localeCompare(b.itemId));
@@ -119,7 +120,7 @@ export default function InventoryReconciliationPage() {
   useEffect(() => setPage(1), [derived.rows.length, focus]);
 
   const pageCount = Math.max(1, Math.ceil(derived.rows.length / PAGE_SIZE));
-  const visible = derived.rows.slice(0, Math.min(derived.rows.length, page * PAGE_SIZE));
+  const visible = derived.rows.slice(0, page * PAGE_SIZE);
 
   function exportCsv() {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
@@ -137,26 +138,10 @@ export default function InventoryReconciliationPage() {
 
   return (
     <main style={s.shell}>
-      <AdminHeader
-        title="Inventory Reconciliation"
-        subtitle="Ledger-derived quantities compared to inventory records."
-        freshnessSlot={
-          <LedgerFreshnessBar
-            lastFetchedUtc={lastFetchedUtc}
-            cacheStatus={cacheStatus}
-            onRefresh={() => load({ force: false })}
-            onForceRefresh={() => load({ force: true })}
-          />
-        }
-      />
-
       <section style={s.card}>
         <div style={s.controls}>
           <button style={s.button} onClick={() => load({ force: false })} disabled={loading}>
-            Refresh (cached)
-          </button>
-          <button style={s.buttonSecondary} onClick={() => load({ force: true })} disabled={loading}>
-            Refresh (force)
+            Refresh
           </button>
           <button style={s.buttonSecondary} onClick={exportCsv} disabled={visible.length === 0}>
             Export CSV
@@ -173,26 +158,8 @@ export default function InventoryReconciliationPage() {
           </label>
         </div>
 
-        {err ? <div style={s.err}>Error: {err}</div> : null}
-        {visible.length === 0 && !loading ? <div style={s.empty}>No reconciliation deltas.</div> : null}
-
-        {derived.rows.length > 0 ? (
-          <div style={s.pagerRow}>
-            <button style={s.pagerBtn} onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
-              Prev
-            </button>
-            <div style={s.pagerText}>
-              Page <span style={s.mono}>{page}</span> / <span style={s.mono}>{pageCount}</span>
-            </div>
-            <button
-              style={s.pagerBtn}
-              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-              disabled={page >= pageCount}
-            >
-              Next
-            </button>
-          </div>
-        ) : null}
+        {err && <div style={s.err}>Error: {err}</div>}
+        {visible.length === 0 && !loading && <div style={s.empty}>No reconciliation deltas.</div>}
 
         <div style={s.tableWrap}>
           <table style={s.table}>
@@ -208,22 +175,12 @@ export default function InventoryReconciliationPage() {
             <tbody>
               {visible.map((r) => (
                 <tr key={r.itemId}>
+                  <td style={s.td}><span style={s.mono}>{r.itemId}</span></td>
+                  <td style={s.tdRight}><span style={s.mono}>{r.ledgerQty}</span></td>
+                  <td style={s.tdRight}><span style={s.mono}>{r.invQty ?? "—"}</span></td>
+                  <td style={s.tdRight}><span style={s.mono}>{r.delta ?? "—"}</span></td>
                   <td style={s.td}>
-                    <span style={s.mono}>{r.itemId}</span>
-                  </td>
-                  <td style={s.tdRight}>
-                    <span style={s.mono}>{r.ledgerQty}</span>
-                  </td>
-                  <td style={s.tdRight}>
-                    <span style={s.mono}>{r.invQty ?? "—"}</span>
-                  </td>
-                  <td style={s.tdRight}>
-                    <span style={s.mono}>{r.delta ?? "—"}</span>
-                  </td>
-                  <td style={s.td}>
-                    <Link style={s.link} href={itemHref(r.itemId)}>
-                      Drill-down
-                    </Link>
+                    <Link style={s.link} href={itemHref(r.itemId)}>Drill-down</Link>
                   </td>
                 </tr>
               ))}
@@ -231,7 +188,11 @@ export default function InventoryReconciliationPage() {
           </table>
         </div>
 
-        <IntegrityFooter ledgerEventsProcessed={derived.processed} skipped={derived.skipped} renderUtc={new Date().toISOString()} />
+        <IntegrityFooter
+          ledgerEventsProcessed={derived.processed}
+          skipped={derived.skipped}
+          renderUtc={new Date().toISOString()}
+        />
       </section>
     </main>
   );
@@ -247,9 +208,6 @@ const styles = {
   buttonSecondary: { padding: "8px 12px", borderRadius: 10, border: "1px solid #bbb", background: "#fff" },
   err: { color: "#b00020" },
   empty: { color: "#666" },
-  pagerRow: { display: "flex", gap: 10, marginTop: 10, alignItems: "center", flexWrap: "wrap" },
-  pagerBtn: { padding: "6px 10px" },
-  pagerText: { fontSize: 13 },
   tableWrap: { overflowX: "auto", marginTop: 12 },
   table: { width: "100%", borderCollapse: "collapse" },
   th: { textAlign: "left", borderBottom: "1px solid #eee" },
