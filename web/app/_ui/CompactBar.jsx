@@ -1,15 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 export const runtime = "edge";
-
-/**
- * CompactBar
- * - Small horizontal bar used across admin views.
- * - Deterministic: no intervals/timers.
- * - Includes a shared density toggle hook for list views.
- */
 
 const DENSITY_KEY = "asora_ui:dense";
 
@@ -36,7 +29,7 @@ export function useDensity(defaultDense = true) {
     }
   }
 
-  return useMemo(() => [dense, setDensePersist], [dense]);
+  return [dense, setDensePersist];
 }
 
 export default function CompactBar({ title, left, right }) {
@@ -44,7 +37,7 @@ export default function CompactBar({ title, left, right }) {
     <div style={styles.shell}>
       <div style={styles.left}>
         {title ? <div style={styles.title}>{title}</div> : null}
-        {left ? <div style={styles.leftExtras}>{left}</div> : null}
+        {left}
       </div>
       <div style={styles.right}>{right}</div>
     </div>
@@ -54,8 +47,8 @@ export default function CompactBar({ title, left, right }) {
 const styles = {
   shell: {
     display: "flex",
-    alignItems: "center",
     justifyContent: "space-between",
+    alignItems: "center",
     gap: 12,
     padding: "10px 12px",
     borderRadius: 12,
@@ -63,8 +56,7 @@ const styles = {
     background: "rgba(255,255,255,0.02)",
     marginBottom: 12,
   },
-  left: { display: "flex", alignItems: "baseline", gap: 10, minWidth: 0 },
-  title: { fontSize: 13, fontWeight: 800, opacity: 0.9, whiteSpace: "nowrap" },
-  leftExtras: { display: "flex", alignItems: "center", gap: 10, minWidth: 0 },
-  right: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
+  left: { display: "flex", gap: 10, alignItems: "center" },
+  title: { fontSize: 13, fontWeight: 800 },
+  right: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
 };
