@@ -3,9 +3,9 @@
 // - Primary: Authorization: Bearer <signed token>
 // - Transitional (deprecated): dev_token query param compatibility bridge
 //
-// IMPORTANT: This module FAILS CLOSED.
-// No anonymous access.
-// Resolves exactly one tenantId, or returns a deterministic denial.
+// FAIL-CLOSED:
+// - No anonymous access.
+// - Resolves exactly one tenantId, or returns a deterministic denial.
 
 import { verifySessionToken } from "./token.worker.mjs";
 import { devTokenToSession } from "./devTokenCompat.worker.mjs";
@@ -36,10 +36,11 @@ function sanitizeSession(session) {
   if (!session.actorId || typeof session.actorId !== "string") return null;
   if (!session.authLevel || typeof session.authLevel !== "string") return null;
 
-  // Provide a stable shape expected by existing codepaths.
-  // U10 adds actorId/authLevel while preserving deterministic gating via isAuthenticated.
+  // Stable shape expected by existing codepaths.
+  // Keep token field present for backward compatibility (non-authoritative).
   return {
     isAuthenticated: true,
+    token: null,
     tenantId: session.tenantId,
     actorId: session.actorId,
     authLevel: session.authLevel,
@@ -84,7 +85,7 @@ export async function resolveSessionFromHeaders(request, env) {
     return { ok: true, session: clean };
   }
 
-  // 2) Transitional: dev_token compatibility for existing UI
+  // 2) Transitional: dev_token compatibility (deprecated; UI still relies on this)
   const devToken = getDevTokenFromUrl(request.url);
   if (devToken) {
     const compatPayload = devTokenToSession(devToken);
