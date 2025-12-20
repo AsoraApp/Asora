@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 import { usePersistedString } from "../_ui/useViewState.jsx";
+import AdminHeader from "../_ui/AdminHeader.jsx";
 
 export const runtime = "edge";
 
@@ -14,11 +15,9 @@ const STORE_KEY = "asora_view:items:itemId";
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
 }
-
 function movementsHref(itemId) {
   return `/inventory/movements?itemId=${encodeURIComponent(String(itemId))}`;
 }
-
 function reconciliationHref(itemId) {
   return `/inventory/reconciliation?itemId=${encodeURIComponent(String(itemId))}`;
 }
@@ -35,10 +34,8 @@ function normalizeInventoryItemsPayload(r) {
   const out = [];
   for (const it of candidates) {
     if (!it || typeof it !== "object") continue;
-
     const itemId = it.itemId;
     if (typeof itemId !== "string" || itemId.trim() === "") continue;
-
     const quantity = it.quantity;
     const hasQty = isFiniteNumber(quantity);
 
@@ -49,19 +46,13 @@ function normalizeInventoryItemsPayload(r) {
     });
   }
 
-  out.sort((a, b) => {
-    const c = a.itemId.localeCompare(b.itemId);
-    if (c !== 0) return c;
-    const ra = JSON.stringify(a.raw || {});
-    const rb = JSON.stringify(b.raw || {});
-    return ra.localeCompare(rb);
-  });
-
+  out.sort((a, b) => a.itemId.localeCompare(b.itemId));
   return out;
 }
 
 export default function InventoryItemsPage() {
   const { isCompact } = useDensity();
+  const s = isCompact ? compact : styles;
 
   const sp = useSearchParams();
   const qpItemId = sp?.get("itemId") || "";
@@ -69,7 +60,6 @@ export default function InventoryItemsPage() {
   const [persistedFocus, setPersistedFocus] = usePersistedString(STORE_KEY, "");
   const [focusItemId, setFocusItemId] = useState(qpItemId || persistedFocus);
 
-  // If URL itemId changes, adopt it and persist it.
   useEffect(() => {
     if (qpItemId && qpItemId !== focusItemId) {
       setFocusItemId(qpItemId);
@@ -87,8 +77,7 @@ export default function InventoryItemsPage() {
     setErr("");
     try {
       const r = await asoraGetJson("/v1/inventory/items", {});
-      const list = normalizeInventoryItemsPayload(r);
-      setRows(list);
+      setRows(normalizeInventoryItemsPayload(r));
     } catch (e) {
       setErr(e?.message || "Failed to load inventory items.");
       setRows([]);
@@ -118,16 +107,12 @@ export default function InventoryItemsPage() {
     return { withQty, withoutQty };
   }, [filtered]);
 
-  const s = isCompact ? compact : styles;
-
   return (
     <main style={s.shell}>
-      <CompactBar here="Inventory Items" />
-
-      <header style={s.header}>
-        <div style={s.title}>Inventory Items</div>
-        <div style={s.sub}>Read-only inventory item list (best-effort shape). Focus is saved locally.</div>
-      </header>
+      <AdminHeader
+        title="Inventory Items"
+        subtitle="Read-only inventory item list. Focus is saved locally."
+      />
 
       <section style={s.card}>
         <div style={s.controls}>
@@ -152,28 +137,26 @@ export default function InventoryItemsPage() {
           {focus ? (
             <div style={s.quickLinks}>
               <Link style={s.link} href={itemHref(focus)}>
-                Drill-down for {focus}
+                Drill-down
               </Link>
-              <span style={s.dot}>·</span>
               <Link style={s.linkSecondary} href={movementsHref(focus)}>
-                Movements for {focus}
+                Movements
               </Link>
-              <span style={s.dot}>·</span>
               <Link style={s.linkSecondary} href={reconciliationHref(focus)}>
-                Reconcile {focus}
+                Reconcile
               </Link>
             </div>
           ) : null}
 
           <div style={s.meta}>
-            Rows: <span style={s.mono}>{filtered.length}</span> | With quantity:{" "}
-            <span style={s.mono}>{qtyStats.withQty}</span> | Without quantity:{" "}
+            Rows: <span style={s.mono}>{filtered.length}</span> | With qty:{" "}
+            <span style={s.mono}>{qtyStats.withQty}</span> | Without qty:{" "}
             <span style={s.mono}>{qtyStats.withoutQty}</span>
           </div>
         </div>
 
         {err ? <div style={s.err}>Error: {err}</div> : null}
-        {filtered.length === 0 && !loading ? <div style={s.empty}>No inventory items to display.</div> : null}
+        {filtered.length === 0 && !loading ? <div style={s.empty}>No inventory items.</div> : null}
 
         <div style={s.tableWrap}>
           <table style={s.table}>
@@ -187,24 +170,12 @@ export default function InventoryItemsPage() {
             <tbody>
               {filtered.map((r) => (
                 <tr key={r.itemId}>
+                  <td style={s.td}><span style={s.mono}>{r.itemId}</span></td>
+                  <td style={s.tdRight}><span style={s.mono}>{r.quantity ?? "—"}</span></td>
                   <td style={s.td}>
-                    <span style={s.mono}>{r.itemId}</span>
-                  </td>
-                  <td style={s.tdRight}>
-                    <span style={s.mono}>{typeof r.quantity === "number" ? r.quantity : "—"}</span>
-                  </td>
-                  <td style={s.td}>
-                    <div style={s.linkRow}>
-                      <Link style={s.link} href={itemHref(r.itemId)}>
-                        Drill-down
-                      </Link>
-                      <Link style={s.linkSecondary} href={movementsHref(r.itemId)}>
-                        Movements
-                      </Link>
-                      <Link style={s.linkSecondary} href={reconciliationHref(r.itemId)}>
-                        Reconcile
-                      </Link>
-                    </div>
+                    <Link style={s.link} href={itemHref(r.itemId)}>Drill-down</Link>{" "}
+                    <Link style={s.linkSecondary} href={movementsHref(r.itemId)}>Movements</Link>{" "}
+                    <Link style={s.linkSecondary} href={reconciliationHref(r.itemId)}>Reconcile</Link>
                   </td>
                 </tr>
               ))}
@@ -212,80 +183,30 @@ export default function InventoryItemsPage() {
           </table>
         </div>
       </section>
-
-      <section style={s.card}>
-        <div style={s.noteTitle}>Notes</div>
-        <ul style={s.ul}>
-          <li>URL itemId overrides saved focus and will be persisted.</li>
-          <li>Quantity is treated as optional because inventory read payload shapes may vary.</li>
-        </ul>
-      </section>
     </main>
   );
 }
 
 const styles = {
-  shell: { minHeight: "100vh", padding: 24, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto" },
-
-  header: { marginBottom: 16 },
-  title: { fontSize: 22, fontWeight: 700 },
-  sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
-
-  card: { border: "1px solid #e5e5e5", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fff" },
+  shell: { minHeight: "100vh", padding: 24 },
+  card: { border: "1px solid #e5e5e5", borderRadius: 12, padding: 16 },
   controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" },
-  label: { display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "#222" },
-  input: { width: 320, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc", outline: "none", fontSize: 13 },
-  button: { padding: "8px 12px", borderRadius: 10, border: "1px solid #111", background: "#111", color: "#fff", cursor: "pointer", fontSize: 13, height: 34 },
-
-  quickLinks: { fontSize: 13, paddingBottom: 2, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-  dot: { color: "#999" },
-  meta: { fontSize: 13, color: "#444", paddingBottom: 2 },
-
-  err: { marginTop: 10, color: "#b00020", fontSize: 13 },
-  empty: { marginTop: 12, color: "#666", fontSize: 13 },
-
-  tableWrap: { width: "100%", overflowX: "auto", marginTop: 12 },
-  table: { borderCollapse: "collapse", width: "100%" },
-  th: { textAlign: "left", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
-  thRight: { textAlign: "right", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
-  td: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, verticalAlign: "top" },
-  tdRight: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, textAlign: "right", verticalAlign: "top" },
-
-  linkRow: { display: "flex", gap: 10, flexWrap: "wrap" },
-  link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
-  linkSecondary: { color: "#444", textDecoration: "none", fontSize: 13 },
-
-  mono: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
-  noteTitle: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
-  ul: { margin: 0, paddingLeft: 18, color: "#333", fontSize: 13, lineHeight: 1.5 },
+  label: { display: "flex", flexDirection: "column", fontSize: 13 },
+  input: { width: 280, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc" },
+  button: { padding: "8px 12px", borderRadius: 10, background: "#111", color: "#fff" },
+  quickLinks: { display: "flex", gap: 10 },
+  link: { color: "#0b57d0", textDecoration: "none" },
+  linkSecondary: { color: "#444", textDecoration: "none" },
+  meta: { fontSize: 13 },
+  err: { color: "#b00020" },
+  empty: { color: "#666" },
+  tableWrap: { overflowX: "auto", marginTop: 12 },
+  table: { width: "100%", borderCollapse: "collapse" },
+  th: { textAlign: "left", borderBottom: "1px solid #eee" },
+  thRight: { textAlign: "right", borderBottom: "1px solid #eee" },
+  td: { padding: "8px" },
+  tdRight: { padding: "8px", textAlign: "right" },
+  mono: { fontFamily: "ui-monospace, monospace" },
 };
 
-const compact = {
-  ...styles,
-  shell: { ...styles.shell, padding: 14 },
-  header: { marginBottom: 10 },
-  title: { fontSize: 18, fontWeight: 750 },
-  sub: { ...styles.sub, fontSize: 12 },
-
-  card: { ...styles.card, padding: 12, marginBottom: 12 },
-  label: { ...styles.label, fontSize: 12 },
-  input: { ...styles.input, padding: "6px 8px", fontSize: 12 },
-  button: { ...styles.button, padding: "6px 10px", fontSize: 12, height: 30 },
-
-  quickLinks: { ...styles.quickLinks, fontSize: 12 },
-  meta: { ...styles.meta, fontSize: 12 },
-
-  err: { ...styles.err, fontSize: 12 },
-  empty: { ...styles.empty, fontSize: 12 },
-
-  th: { ...styles.th, padding: "8px 6px", fontSize: 11 },
-  thRight: { ...styles.thRight, padding: "8px 6px", fontSize: 11 },
-  td: { ...styles.td, padding: "8px 6px", fontSize: 12 },
-  tdRight: { ...styles.tdRight, padding: "8px 6px", fontSize: 12 },
-
-  link: { ...styles.link, fontSize: 12 },
-  linkSecondary: { ...styles.linkSecondary, fontSize: 12 },
-
-  noteTitle: { ...styles.noteTitle, fontSize: 13 },
-  ul: { ...styles.ul, fontSize: 12 },
-};
+const compact = styles;
