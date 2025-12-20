@@ -3,7 +3,7 @@
 // Does NOT enforce numeric limits by itself; it only blocks missing/unknown plan on writes.
 
 import { nowUtcIso } from "../domain/time/utc.mjs";
-import { emitAudit } from "../observability/audit.mjs";
+import { emitAudit } from "../observability/audit.worker.mjs";
 import { resolveTenantPlanOrThrow } from "../domain/plans/planResolution.mjs";
 import { isPlanEnforcementError } from "../domain/plans/planErrors.mjs";
 
@@ -18,48 +18,81 @@ function isWriteMethod(method) {
   return m !== "GET" && m !== "HEAD" && m !== "OPTIONS";
 }
 
-export async function requirePlanForWrites(ctx, req, baseHeaders) {
+function safePath(req) {
+  try {
+    return new URL(req.url).pathname;
+  } catch {
+    return null;
+  }
+}
+
+function routeLabel(req) {
+  const method = String(req?.method || "UNKNOWN").toUpperCase();
+  const path = safePath(req);
+  return `${method} ${path || "UNKNOWN_PATH"}`;
+}
+
+/**
+ * Worker middleware. env + cfctx required (audit is persisted via KV).
+ * Returns:
+ * - { ok: true } when allowed
+ * - Response when blocked (fail-closed)
+ */
+export async function requirePlanForWrites(ctx, req, baseHeaders, cfctx, env) {
   if (!isWriteMethod(req?.method)) return { ok: true };
 
+  const path = safePath(req);
+  const method = req?.method || null;
+
   try {
-    await resolveTenantPlanOrThrow(ctx, `${req.method || "UNKNOWN"} ${new URL(req.url).pathname}`);
+    await resolveTenantPlanOrThrow(ctx, routeLabel(req), env, cfctx);
     return { ok: true };
   } catch (err) {
     if (isPlanEnforcementError(err)) {
-      // Audit already emitted by resolver on missing/unknown plan; still emit a generic blocked write audit fact.
-      await emitAudit(ctx, {
-        action: "write.blocked",
-        atUtc: nowUtcIso(),
-        tenantId: ctx?.tenantId || null,
-        reason: err.code,
-        path: (() => {
-          try {
-            return new URL(req.url).pathname;
-          } catch {
-            return null;
-          }
-        })(),
-        method: req?.method || null,
-      });
+      // Resolver may emit audit, but we still record a deterministic "blocked write" fact.
+      emitAudit(
+        ctx,
+        {
+          eventCategory: "SECURITY",
+          eventType: "WRITE_BLOCKED",
+          objectType: "http_route",
+          objectId: routeLabel(req),
+          decision: "DENY",
+          reasonCode: err.code,
+          factsSnapshot: {
+            atUtc: nowUtcIso(),
+            tenantId: ctx?.tenantId || null,
+            path,
+            method,
+            details: err.details || null,
+          },
+        },
+        env,
+        cfctx
+      );
 
-      // Deterministic fail-closed response
       return json(403, { error: "FORBIDDEN", code: err.code, details: err.details || null }, baseHeaders);
     }
 
-    await emitAudit(ctx, {
-      action: "write.blocked",
-      atUtc: nowUtcIso(),
-      tenantId: ctx?.tenantId || null,
-      reason: "PLAN_ENFORCEMENT_ERROR",
-      path: (() => {
-        try {
-          return new URL(req.url).pathname;
-        } catch {
-          return null;
-        }
-      })(),
-      method: req?.method || null,
-    });
+    emitAudit(
+      ctx,
+      {
+        eventCategory: "SECURITY",
+        eventType: "WRITE_BLOCKED",
+        objectType: "http_route",
+        objectId: routeLabel(req),
+        decision: "DENY",
+        reasonCode: "PLAN_ENFORCEMENT_ERROR",
+        factsSnapshot: {
+          atUtc: nowUtcIso(),
+          tenantId: ctx?.tenantId || null,
+          path,
+          method,
+        },
+      },
+      env,
+      cfctx
+    );
 
     return json(403, { error: "FORBIDDEN", code: "PLAN_ENFORCEMENT_ERROR", details: null }, baseHeaders);
   }
