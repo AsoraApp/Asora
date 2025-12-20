@@ -60,8 +60,9 @@ export default function InventorySnapshotPage() {
       });
 
       setEvents(sorted);
-      setComputedAtUtc(new Date().toISOString());
-      setLastFetchedUtc(new Date().toISOString());
+      const now = new Date().toISOString();
+      setComputedAtUtc(now);
+      setLastFetchedUtc(now);
     } catch (e) {
       setErr(e?.message || "Failed to load ledger events.");
       setEvents([]);
@@ -115,9 +116,8 @@ export default function InventorySnapshotPage() {
 
   function exportCsv() {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `asora_inventory_snapshot_${ts}.csv`;
     downloadCsvFromRows(
-      filename,
+      `asora_inventory_snapshot_${ts}.csv`,
       ["itemId", "derivedQuantity"],
       filteredRows.map((r) => ({ itemId: r.itemId, derivedQuantity: r.derivedQuantity }))
     );
@@ -129,17 +129,13 @@ export default function InventorySnapshotPage() {
 
   return (
     <main style={s.shell}>
-      <AdminHeader
-        title="Inventory Snapshot"
-        subtitle="Derived on-hand quantities computed client-side from ledger events."
-        freshnessSlot={
-          <LedgerFreshnessBar
-            lastFetchedUtc={lastFetchedUtc}
-            cacheStatus={cacheStatus}
-            onRefresh={() => load({ force: false })}
-            onForceRefresh={() => load({ force: true })}
-          />
-        }
+      <CompactBar here="Snapshot" />
+
+      <LedgerFreshnessBar
+        lastFetchedUtc={lastFetchedUtc}
+        cacheStatus={cacheStatus}
+        onRefresh={() => load({ force: false })}
+        onForceRefresh={() => load({ force: true })}
       />
 
       <section style={s.card}>
