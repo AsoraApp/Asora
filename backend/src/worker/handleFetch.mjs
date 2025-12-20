@@ -11,7 +11,7 @@ import { notificationsFetchRouter } from "./notifications.worker.mjs";
 
 import { loadTenantCollection } from "../storage/jsonStore.worker.mjs";
 
-const BUILD_STAMP = "b13-security-audit-hardening-2025-12-18T01:50Z"; // change this string on each deploy attempt
+const BUILD_STAMP = "u10-auth-foundation-2025-12-20T16:40Z"; // CHANGE THIS ON EACH DEPLOY
 
 function json(statusCode, body, headersObj) {
   const h = new Headers(headersObj || {});
@@ -67,16 +67,28 @@ function safeCreateCtx({ requestId, session }) {
   // createRequestContext may consult env bindings; fail-closed if it throws.
   try {
     const c = createRequestContext({ requestId, session });
-    // Ensure tenantId is present if session carried it.
     const tenantId = c?.tenantId || session?.tenantId || null;
     return { ...(c || {}), requestId, session, tenantId };
   } catch {
     return {
       requestId,
-      session: session || { isAuthenticated: false, token: null, tenantId: null },
+      session: session || { isAuthenticated: false, tenantId: null, actorId: null, authLevel: null },
       tenantId: session?.tenantId || null,
     };
   }
+}
+
+function auditAuthRejected(ctx, { method, path, code, status }) {
+  // Auth failures must be auditable (U10).
+  emitAudit(ctx, {
+    eventCategory: "SECURITY",
+    eventType: "AUTH_REJECTED",
+    objectType: "auth",
+    objectId: null,
+    decision: "DENY",
+    reasonCode: String(code || (status === 403 ? "TENANT_REQUIRED" : "AUTH_REQUIRED")),
+    factsSnapshot: { method, path },
+  });
 }
 
 export default async function handleFetch(request, env, cfctx) {
@@ -102,7 +114,26 @@ export default async function handleFetch(request, env, cfctx) {
     return json(200, { ok: true, service: "asora", runtime: "cloudflare-worker", requestId }, baseHeaders);
   }
 
-  const session = resolveSessionFromHeaders(request.headers, u);
+  // U10: Resolve session (fail closed, auditable).
+  const sr = await resolveSessionFromHeaders(request, env);
+  if (!sr || sr.ok !== true) {
+    const status = sr?.status || 401;
+    const err = sr?.error || "UNAUTHORIZED";
+    const code = sr?.code || "AUTH_REQUIRED";
+    const details = sr?.details || null;
+
+    const ctxDenied = safeCreateCtx({
+      requestId,
+      session: { isAuthenticated: false, tenantId: null, actorId: null, authLevel: null },
+    });
+
+    // Audit rejection deterministically
+    auditAuthRejected(ctxDenied, { method, path: pathname, code, status });
+
+    return json(status, { error: err, code, details }, baseHeaders);
+  }
+
+  const session = sr.session;
   const ctx = safeCreateCtx({ requestId, session });
 
   // Standard request audit (received)
@@ -132,7 +163,7 @@ export default async function handleFetch(request, env, cfctx) {
     return methodNotAllowed(baseHeaders);
   }
 
-  // B13: /api/auth/me is NOT public; missing/invalid auth must be 401/403
+  // /api/auth/me is not public; enforce tenant-scoped auth
   if (pathname === "/api/auth/me") {
     const denied = requireAuth(ctx, baseHeaders);
     if (denied) {
@@ -243,7 +274,7 @@ export default async function handleFetch(request, env, cfctx) {
     if (r) return r;
   }
 
-  // B13: deterministic not found + audit when authenticated+tenant-scoped
+  // Deterministic not found + audit when authenticated+tenant-scoped
   if (pathname.startsWith("/api/")) {
     if (isAuthedTenantScoped(ctx)) {
       emitAudit(ctx, {
