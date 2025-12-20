@@ -260,7 +260,6 @@ export async function handleFetch(request, env, cfctx) {
         return json(400, { error: "BAD_REQUEST", code: "INVALID_JSON", details: null }, baseHeaders);
       }
 
-      // NOTE: ledger.write.worker.mjs must also be updated to pass env through to storage + audit.
       return writeLedgerEventFromJson(ctx, body, baseHeaders, cfctx, env);
     }
 
@@ -285,11 +284,13 @@ export async function handleFetch(request, env, cfctx) {
 
   // Alerts / notifications routers
   {
-    const r = await alertsFetchRouter(ctx, request, baseHeaders, cfctx);
+    // IMPORTANT: pass env + cfctx through (storage + audit require it)
+    const r = await alertsFetchRouter(ctx, request, baseHeaders, cfctx, env);
     if (r) return r;
   }
   {
-    const r = await notificationsFetchRouter(ctx, request, baseHeaders);
+    // IMPORTANT: notifications router must also accept env + cfctx
+    const r = await notificationsFetchRouter(ctx, request, baseHeaders, cfctx, env);
     if (r) return r;
   }
 
