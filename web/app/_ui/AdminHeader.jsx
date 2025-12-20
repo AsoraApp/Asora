@@ -1,152 +1,60 @@
-// web/app/_ui/AdminHeader.jsx
 "use client";
 
-import Link from "next/link";
 import { useMemo } from "react";
+import Link from "next/link";
 import { getStoredDevToken } from "@/lib/asoraFetch";
-import { useDensity } from "./CompactBar.jsx";
 
-export const runtime = "edge";
-
-/**
- * U8 — Shared admin header + unified primary nav.
- *
- * Rules:
- * - UI-only, read-only
- * - Tenant scope indicator is dev_token from localStorage (read-only)
- * - Build stamp is optional (caller passes string if available)
- * - “Freshness row” is optional (caller passes a ReactNode)
- *
- * Props:
- *  - title: string
- *  - subtitle?: string | ReactNode
- *  - buildStamp?: string
- *  - rightSlot?: ReactNode (optional, for page-specific controls)
- *  - freshnessSlot?: ReactNode (optional, e.g., <LedgerFreshnessBar ... />)
- */
-
-const NAV = [
-  { href: "/ledger", label: "Ledger" },
-  { href: "/inventory/items", label: "Items" },
-  { href: "/inventory/snapshot", label: "Snapshot" },
-  { href: "/inventory/movements", label: "Movements" },
-  { href: "/inventory/reconciliation", label: "Reconciliation" },
-  { href: "/inventory/anomalies", label: "Anomalies" },
-  { href: "/inventory/exports", label: "Exports" },
-];
-
-export default function AdminHeader({ title, subtitle, buildStamp, rightSlot, freshnessSlot }) {
-  const { isCompact } = useDensity();
-  const s = isCompact ? compact : styles;
-
+export default function AdminHeader({ title, subtitle, rightSlot }) {
   const devToken = useMemo(() => getStoredDevToken(), []);
-  const tenantLabel = devToken || "(none)";
+  const hasToken = Boolean(devToken);
 
   return (
-    <header style={s.shell}>
-      <div style={s.topRow}>
-        <div style={s.brandCol}>
-          <div style={s.brand}>Asora</div>
-          <div style={s.titleRow}>
-            <div style={s.title}>{String(title || "")}</div>
-            {buildStamp ? <div style={s.buildPill}>build: {String(buildStamp)}</div> : null}
+    <header style={styles.wrap}>
+      <div style={styles.topRow}>
+        <div style={styles.left}>
+          <div style={styles.titleRow}>
+            <Link href="/" style={styles.back}>← Home</Link>
+            <div style={styles.title}>{title}</div>
           </div>
-
-          {subtitle ? <div style={s.subtitle}>{subtitle}</div> : null}
-
-          <div style={s.tenantRow}>
-            <span style={s.tenantLabel}>Tenant (dev_token)</span>
-            <span style={s.tenantValue}>{tenantLabel}</span>
+          {subtitle ? <div style={styles.sub}>{subtitle}</div> : null}
+          <div style={styles.tokenRow}>
+            <span style={{ ...styles.pill, ...(hasToken ? styles.pillOk : styles.pillWarn) }}>
+              {hasToken ? "dev_token active" : "dev_token missing"}
+            </span>
+            <span style={styles.tokenText}>
+              {hasToken ? devToken : "Set dev_token in the header bar."}
+            </span>
           </div>
         </div>
 
-        <div style={s.rightCol}>{rightSlot || null}</div>
+        <div style={styles.right}>{rightSlot || null}</div>
       </div>
-
-      <nav style={s.nav}>
-        {NAV.map((n) => (
-          <Link key={n.href} href={n.href} style={s.navLink}>
-            {n.label}
-          </Link>
-        ))}
-      </nav>
-
-      {freshnessSlot ? <div style={s.freshness}>{freshnessSlot}</div> : null}
     </header>
   );
 }
 
 const styles = {
-  shell: {
-    borderRadius: 14,
-    border: "1px solid rgba(255,255,255,0.10)",
-    background: "rgba(255,255,255,0.04)",
-    padding: 14,
-    marginBottom: 14,
-    color: "#e6edf3",
-  },
+  wrap: { marginBottom: 14 },
+  topRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" },
+  left: { minWidth: 280, flex: "1 1 520px" },
+  right: { flex: "0 0 auto" },
 
-  topRow: { display: "flex", justifyContent: "space-between", gap: 14, flexWrap: "wrap", alignItems: "flex-start" },
-
-  brandCol: { display: "flex", flexDirection: "column", gap: 8, minWidth: 280, flex: "1 1 auto" },
-  rightCol: { display: "flex", alignItems: "flex-start", justifyContent: "flex-end", flex: "0 0 auto" },
-
-  brand: { fontSize: 16, fontWeight: 900, letterSpacing: 0.3, opacity: 0.95 },
-
-  titleRow: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
-  title: { fontSize: 18, fontWeight: 900 },
-
-  buildPill: {
-    padding: "2px 8px",
-    borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "rgba(0,0,0,0.18)",
-    fontSize: 11,
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-    opacity: 0.9,
-  },
-
-  subtitle: { fontSize: 12, opacity: 0.8, lineHeight: 1.4 },
-
-  tenantRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
-  tenantLabel: { fontSize: 11, fontWeight: 900, opacity: 0.7 },
-  tenantValue: {
-    fontSize: 12,
-    padding: "2px 8px",
-    borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(0,0,0,0.18)",
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-    opacity: 0.95,
-  },
-
-  nav: {
-    display: "flex",
-    gap: 8,
-    flexWrap: "wrap",
-    marginTop: 10,
-    paddingTop: 10,
-    borderTop: "1px solid rgba(255,255,255,0.08)",
-  },
-  navLink: {
-    padding: "7px 10px",
-    borderRadius: 10,
-    border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(0,0,0,0.14)",
-    color: "#e6edf3",
+  titleRow: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" },
+  back: {
+    color: "#111",
     textDecoration: "none",
-    fontSize: 12,
-    fontWeight: 800,
-    opacity: 0.95,
+    border: "1px solid #ddd",
+    padding: "8px 10px",
+    borderRadius: 10,
+    background: "#fff",
+    fontSize: 13,
   },
+  title: { fontSize: 22, fontWeight: 800 },
+  sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
 
-  freshness: { marginTop: 10 },
-};
-
-const compact = {
-  ...styles,
-  shell: { ...styles.shell, padding: 12, marginBottom: 12 },
-  brand: { ...styles.brand, fontSize: 15 },
-  title: { ...styles.title, fontSize: 16 },
-  navLink: { ...styles.navLink, padding: "6px 9px", fontSize: 11 },
+  tokenRow: { marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
+  pill: { fontSize: 11, padding: "4px 8px", borderRadius: 999, border: "1px solid #ddd", background: "#fff" },
+  pillOk: { borderColor: "rgba(0,120,60,0.35)", background: "rgba(0,120,60,0.06)" },
+  pillWarn: { borderColor: "rgba(180,120,0,0.35)", background: "rgba(180,120,0,0.06)" },
+  tokenText: { fontSize: 12, color: "#333", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
 };
