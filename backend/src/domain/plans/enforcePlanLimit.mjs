@@ -2,7 +2,7 @@
 // Hard enforcement inside write paths only. Rejects fully, emits audit on violation.
 
 import { nowUtcIso } from "../time/utc.mjs";
-import { emitAudit } from "../../observability/audit.mjs";
+import { emitAudit } from "../../observability/audit.worker.mjs";
 import { getLimitOrNull } from "./planDefinitions.mjs";
 import { PlanEnforcementError } from "./planErrors.mjs";
 import { getCurrentCountOrThrow } from "./usageCounters.mjs";
