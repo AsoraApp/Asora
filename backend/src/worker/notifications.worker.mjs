@@ -1,5 +1,5 @@
 import { loadTenantCollection } from "../storage/jsonStore.worker.mjs";
-import { emitAudit } from "../observability/audit.mjs";
+import { emitAudit } from "../observability/audit.worker.mjs";
 
 function json(statusCode, body, baseHeaders) {
   const h = new Headers(baseHeaders || {});
