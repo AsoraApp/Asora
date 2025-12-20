@@ -1,5 +1,4 @@
 import LedgerClient from "./ui/LedgerClient";
-import AdminHeader from "../_ui/AdminHeader.jsx";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
