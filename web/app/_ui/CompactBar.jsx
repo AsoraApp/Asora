@@ -1,108 +1,70 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { getStoredDevToken } from "@/lib/asoraFetch";
 
 export const runtime = "edge";
 
+/**
+ * CompactBar
+ * - Small horizontal bar used across admin views.
+ * - Deterministic: no intervals/timers.
+ * - Includes a shared density toggle hook for list views.
+ */
+
 const DENSITY_KEY = "asora_ui:dense";
-
-function safeReadBool(key, fallback) {
-  try {
-    const v = localStorage.getItem(key);
-    if (v === null || v === undefined) return fallback;
-    return v === "1" || v === "true";
-  } catch {
-    return fallback;
-  }
-}
-
-function safeWriteBool(key, value) {
-  try {
-    localStorage.setItem(key, value ? "1" : "0");
-  } catch {
-    // ignore
-  }
-}
 
 export function useDensity(defaultDense = true) {
   const [dense, setDense] = useState(defaultDense);
 
   useEffect(() => {
-    setDense(safeReadBool(DENSITY_KEY, defaultDense));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    try {
+      const raw = localStorage.getItem(DENSITY_KEY);
+      if (raw === "0") setDense(false);
+      if (raw === "1") setDense(true);
+    } catch {
+      // ignore
+    }
   }, []);
 
-  const setAndPersist = (next) => {
-    const v = typeof next === "function" ? Boolean(next(dense)) : Boolean(next);
-    setDense(v);
-    safeWriteBool(DENSITY_KEY, v);
-  };
+  function setDensePersist(v) {
+    const b = Boolean(v);
+    setDense(b);
+    try {
+      localStorage.setItem(DENSITY_KEY, b ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }
 
-  return { dense, setDense: setAndPersist };
+  return useMemo(() => [dense, setDensePersist], [dense]);
 }
 
-/**
- * Minimal shared top bar used across read-only views.
- * - Dev token display only (token entry UI lives in AdminHeader)
- * - Optional actions provided via props
- */
-export default function CompactBar({
-  title = "",
-  right = null,
-  actions = null,
-  style = null
-}) {
-  const devToken = useMemo(() => getStoredDevToken(), []);
-
+export default function CompactBar({ title, left, right }) {
   return (
-    <div style={{ ...styles.bar, ...(style || null) }}>
+    <div style={styles.shell}>
       <div style={styles.left}>
-        {title ? <div style={styles.title}>{title}</div> : <div style={styles.title}>Asora</div>}
-        <div style={styles.meta}>
-          <span style={styles.k}>dev_token:</span>{" "}
-          <span style={styles.v}>{devToken ? String(devToken) : "(not set)"}</span>
-        </div>
+        {title ? <div style={styles.title}>{title}</div> : null}
+        {left ? <div style={styles.leftExtras}>{left}</div> : null}
       </div>
-
-      <div style={styles.right}>
-        {actions ? <div style={styles.actions}>{actions}</div> : null}
-        {right}
-      </div>
+      <div style={styles.right}>{right}</div>
     </div>
   );
 }
 
 const styles = {
-  bar: {
+  shell: {
     display: "flex",
-    justifyContent: "space-between",
     alignItems: "center",
+    justifyContent: "space-between",
     gap: 12,
     padding: "10px 12px",
     borderRadius: 12,
     border: "1px solid rgba(255,255,255,0.10)",
     background: "rgba(255,255,255,0.02)",
-    marginBottom: 12
+    marginBottom: 12,
   },
-  left: { display: "flex", flexDirection: "column", gap: 4, minWidth: 0 },
-  title: { fontSize: 13, fontWeight: 800, opacity: 0.95 },
-  meta: {
-    fontSize: 12,
-    opacity: 0.85,
-    display: "flex",
-    gap: 6,
-    alignItems: "center",
-    minWidth: 0
-  },
-  k: { opacity: 0.8 },
-  v: {
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-    maxWidth: 520
-  },
-  right: { display: "flex", gap: 10, alignItems: "center", justifyContent: "flex-end" },
-  actions: { display: "flex", gap: 8, alignItems: "center" }
+  left: { display: "flex", alignItems: "baseline", gap: 10, minWidth: 0 },
+  title: { fontSize: 13, fontWeight: 800, opacity: 0.9, whiteSpace: "nowrap" },
+  leftExtras: { display: "flex", alignItems: "center", gap: 10, minWidth: 0 },
+  right: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
 };
