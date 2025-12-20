@@ -6,7 +6,6 @@ import { useSearchParams } from "next/navigation";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 import { usePersistedString } from "../_ui/useViewState.jsx";
-import AdminHeader from "../_ui/AdminHeader.jsx";
 
 export const runtime = "edge";
 
