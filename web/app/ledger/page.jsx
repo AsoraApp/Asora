@@ -1,3 +1,4 @@
+"use client";
 import LedgerClient from "./ui/LedgerClient";
 
 export const runtime = "edge";
