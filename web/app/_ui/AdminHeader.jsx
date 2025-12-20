@@ -3,58 +3,76 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { getStoredDevToken } from "@/lib/asoraFetch";
+import CompactBar, { useDensity } from "./CompactBar.jsx";
 
-export default function AdminHeader({ title, subtitle, rightSlot }) {
+export const runtime = "edge";
+
+export default function AdminHeader({
+  title,
+  subtitle = null,
+  freshnessSlot = null,
+  backHref = "/",
+}) {
   const devToken = useMemo(() => getStoredDevToken(), []);
-  const hasToken = Boolean(devToken);
+  const { dense } = useDensity(true);
 
   return (
     <header style={styles.wrap}>
-      <div style={styles.topRow}>
-        <div style={styles.left}>
-          <div style={styles.titleRow}>
-            <Link href="/" style={styles.back}>← Home</Link>
-            <div style={styles.title}>{title}</div>
-          </div>
-          {subtitle ? <div style={styles.sub}>{subtitle}</div> : null}
-          <div style={styles.tokenRow}>
-            <span style={{ ...styles.pill, ...(hasToken ? styles.pillOk : styles.pillWarn) }}>
-              {hasToken ? "dev_token active" : "dev_token missing"}
-            </span>
-            <span style={styles.tokenText}>
-              {hasToken ? devToken : "Set dev_token in the header bar."}
-            </span>
-          </div>
-        </div>
+      <CompactBar
+        title={title}
+        right={freshnessSlot}
+      />
 
-        <div style={styles.right}>{rightSlot || null}</div>
+      <div style={styles.row}>
+        <Link href={backHref} style={styles.back}>
+          ← Home
+        </Link>
+        <div style={styles.title}>{title}</div>
+      </div>
+
+      {subtitle ? <div style={styles.sub}>{subtitle}</div> : null}
+
+      <div style={styles.meta}>
+        <span style={styles.k}>dev_token</span>
+        <span style={styles.v}>{devToken || "(not set)"}</span>
+        <span style={styles.dot}>·</span>
+        <span style={styles.k}>density</span>
+        <span style={styles.v}>{dense ? "compact" : "comfortable"}</span>
       </div>
     </header>
   );
 }
 
 const styles = {
-  wrap: { marginBottom: 14 },
-  topRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" },
-  left: { minWidth: 280, flex: "1 1 520px" },
-  right: { flex: "0 0 auto" },
-
-  titleRow: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" },
+  wrap: {
+    marginBottom: 14,
+    paddingBottom: 10,
+    borderBottom: "1px solid rgba(255,255,255,0.08)",
+  },
+  row: { display: "flex", alignItems: "center", gap: 12, marginTop: 10 },
   back: {
-    color: "#111",
+    color: "#e6edf3",
     textDecoration: "none",
-    border: "1px solid #ddd",
-    padding: "8px 10px",
+    border: "1px solid rgba(255,255,255,0.14)",
+    padding: "6px 10px",
     borderRadius: 10,
-    background: "#fff",
+    background: "rgba(255,255,255,0.03)",
     fontSize: 13,
   },
-  title: { fontSize: 22, fontWeight: 800 },
-  sub: { marginTop: 6, color: "#555", fontSize: 13, lineHeight: 1.35 },
-
-  tokenRow: { marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
-  pill: { fontSize: 11, padding: "4px 8px", borderRadius: 999, border: "1px solid #ddd", background: "#fff" },
-  pillOk: { borderColor: "rgba(0,120,60,0.35)", background: "rgba(0,120,60,0.06)" },
-  pillWarn: { borderColor: "rgba(180,120,0,0.35)", background: "rgba(180,120,0,0.06)" },
-  tokenText: { fontSize: 12, color: "#333", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+  title: { fontSize: 20, fontWeight: 800 },
+  sub: { marginTop: 6, fontSize: 13, opacity: 0.85, lineHeight: 1.4 },
+  meta: {
+    marginTop: 6,
+    fontSize: 12,
+    opacity: 0.75,
+    display: "flex",
+    gap: 8,
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
+  k: { opacity: 0.7 },
+  v: {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  },
+  dot: { opacity: 0.5 },
 };
