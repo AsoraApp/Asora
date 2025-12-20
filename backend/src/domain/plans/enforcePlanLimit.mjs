@@ -31,17 +31,25 @@ export async function enforcePlanLimitOrThrow(ctx, plan, col, input) {
 
   const limit = getLimitOrNull(plan, resourceType);
   if (!Number.isFinite(limit)) {
-    await emitAudit(ctx, {
-      action: "plan.violation",
-      atUtc: nowUtcIso(),
-      tenantId: ctx.tenantId,
+emitAudit(
+  ctx,
+  {
+    eventCategory: "SECURITY",
+    eventType: "PLAN_VIOLATION",
+    objectType: "tenant",
+    objectId: ctx.tenantId,
+    decision: "DENY",
+    reasonCode: "UNDEFINED_LIMIT",
+    factsSnapshot: {
       plan: plan.name,
       resourceType,
-      limit: null,
-      attempted: null,
       attemptedAction,
-      reason: "UNDEFINED_LIMIT",
-    });
+      limit: null,
+    },
+  },
+  ctx.env,
+  ctx.cfctx
+);
     throw new PlanEnforcementError("UNDEFINED_LIMIT", "Plan limit undefined. Fail-closed.", {
       plan: plan.name,
       resourceType,
@@ -63,17 +71,26 @@ export async function enforcePlanLimitOrThrow(ctx, plan, col, input) {
   }
 
   if (attempted > limit) {
-    await emitAudit(ctx, {
-      action: "plan.violation",
-      atUtc: nowUtcIso(),
-      tenantId: ctx.tenantId,
+    emitAudit(
+  ctx,
+  {
+    eventCategory: "SECURITY",
+    eventType: "PLAN_VIOLATION",
+    objectType: "tenant",
+    objectId: ctx.tenantId,
+    decision: "DENY",
+    reasonCode: "LIMIT_EXCEEDED",
+    factsSnapshot: {
       plan: plan.name,
       resourceType,
       limit,
       attempted,
       attemptedAction,
-      reason: "LIMIT_EXCEEDED",
-    });
+    },
+  },
+  ctx.env,
+  ctx.cfctx
+);
 
     throw new PlanEnforcementError("PLAN_LIMIT_EXCEEDED", "Plan limit exceeded. Operation blocked.", {
       tenantId: ctx.tenantId,
