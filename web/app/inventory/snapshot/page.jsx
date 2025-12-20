@@ -7,7 +7,6 @@ import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 import { usePersistedString } from "../_ui/useViewState.jsx";
 import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
 import SavedViewsBar from "@/app/ui/SavedViewsBar";
-import AdminHeader from "../_ui/AdminHeader.jsx";
 import LedgerFreshnessBar from "../_ui/LedgerFreshnessBar.jsx";
 import { downloadCsvFromRows } from "../_ui/csv.js";
 

@@ -5,8 +5,6 @@ import Link from "next/link";
 import { asoraGetJson } from "@/lib/asoraFetch";
 import CompactBar, { useDensity } from "../_ui/CompactBar.jsx";
 import { clearLedgerCache, getLedgerEventsCached } from "@/lib/ledgerCache";
-
-import AdminHeader from "@/app/_ui/AdminHeader.jsx";
 import LedgerFreshnessBar from "@/app/_ui/LedgerFreshnessBar.jsx";
 import IntegrityFooter from "@/app/_ui/IntegrityFooter.jsx";
 import { downloadCsvFromRows } from "@/app/_ui/csv.js";
