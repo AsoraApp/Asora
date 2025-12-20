@@ -1,6 +1,6 @@
 import { loadTenantCollection, saveTenantCollection } from "../storage/jsonStore.worker.mjs";
 import { nowUtcIso } from "../domain/time/utc.mjs";
-import { emitAudit } from "../observability/audit.mjs";
+import { emitAudit } from "../observability/audit.worker.mjs";
 import { validateAlertRuleInput } from "../domain/alerts/validateRule.mjs";
 import { evaluateAlertsOnce } from "../domain/alerts/evaluate.mjs";
 
