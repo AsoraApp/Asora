@@ -1,7 +1,6 @@
-"use client";
-
 import DevTokenBar from "@/app/ui/DevTokenBar";
 import GlobalItemSearch from "@/app/ui/GlobalItemSearch";
+import AdminShell from "./AdminShell.jsx";
 
 export const runtime = "edge";
 
@@ -22,7 +21,9 @@ export default function RootLayout({ children }) {
       >
         <DevTokenBar />
         <GlobalItemSearch />
-        <div style={{ padding: 16 }}>{children}</div>
+        <AdminShell>
+          <div style={{ padding: 16 }}>{children}</div>
+        </AdminShell>
       </body>
     </html>
   );
