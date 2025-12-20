@@ -98,18 +98,12 @@ export default function InventoryExportsPage() {
 
   return (
     <main style={styles.shell}>
-      <AdminHeader
-        title="Integrity Exports"
-        subtitle="Deterministic, client-generated CSV exports (read-only)."
-        rightSlot={
-          <LedgerFreshnessBar
-            lastFetchedUtc={lastFetchedUtc}
-            cacheStatus={cacheStatus}
-            loading={busy}
-            onRefresh={() => primeLedger({ force: false })}
-            onForceRefresh={() => primeLedger({ force: true })}
-          />
-        }
+      <LedgerFreshnessBar
+        lastFetchedUtc={lastFetchedUtc}
+        cacheStatus={cacheStatus}
+        loading={busy}
+        onRefresh={() => primeLedger({ force: false })}
+        onForceRefresh={() => primeLedger({ force: true })}
       />
 
       <section style={styles.card}>
