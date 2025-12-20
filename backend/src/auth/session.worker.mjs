@@ -1,51 +1,112 @@
 // backend/src/auth/session.worker.mjs
-// Session resolution is intentionally deterministic and fail-closed.
+// U10: Session resolution layer.
+// - Primary: Authorization: Bearer <signed token>
+// - Transitional (deprecated): dev_token query param compatibility bridge
 //
-// Supported inputs:
-// 1) Authorization: Bearer <token>
-// 2) Dev-only fallback: ?dev_token=<token>
-//
-// Dev token format to carry tenant scope WITHOUT a login UI:
-//   dev_token=tenant:<TENANT_ID>
-// Example:
-//   /v1/inventory/items?dev_token=tenant:demo
+// IMPORTANT: This module FAILS CLOSED.
+// No anonymous access.
+// Resolves exactly one tenantId, or returns a deterministic denial.
 
-function safeGetHeader(headers, name) {
+import { verifySessionToken } from "./token.worker.mjs";
+import { devTokenToSession } from "./devTokenCompat.worker.mjs";
+
+function getBearerToken(headers) {
+  const h = headers?.get?.("Authorization") || headers?.get?.("authorization") || "";
+  const s = String(h).trim();
+  if (!s) return null;
+  const m = s.match(/^Bearer\s+(.+)$/i);
+  if (!m) return null;
+  return m[1].trim();
+}
+
+function getDevTokenFromUrl(url) {
   try {
-    return headers.get(name) || headers.get(name.toLowerCase()) || "";
+    const u = new URL(url);
+    const v = u.searchParams.get("dev_token");
+    return v ? String(v) : null;
   } catch {
-    return "";
+    return null;
   }
 }
 
-function parseTenantFromToken(token) {
-  if (!token || typeof token !== "string") return null;
+function sanitizeSession(session) {
+  if (!session || typeof session !== "object") return null;
 
-  // tenant:<TENANT_ID>
-  const m = token.match(/^tenant:([A-Za-z0-9._-]{1,128})$/);
-  if (m) return m[1];
+  if (!session.tenantId || typeof session.tenantId !== "string") return null;
+  if (!session.actorId || typeof session.actorId !== "string") return null;
+  if (!session.authLevel || typeof session.authLevel !== "string") return null;
 
-  return null;
-}
-
-export function resolveSessionFromHeaders(headers, urlObj) {
-  const auth = safeGetHeader(headers, "Authorization");
-  let token = null;
-
-  const m = auth.match(/^Bearer\s+(.+)$/i);
-  if (m) token = m[1];
-
-  // Dev-only fallback: query param
-  if (!token && urlObj && urlObj.searchParams) {
-    const dev = urlObj.searchParams.get("dev_token");
-    if (dev && typeof dev === "string") token = dev;
-  }
-
-  const tenantId = parseTenantFromToken(token);
-
+  // Provide a stable shape expected by existing codepaths.
+  // U10 adds actorId/authLevel while preserving deterministic gating via isAuthenticated.
   return {
-    isAuthenticated: !!token,
-    token: token || null,
-    tenantId: tenantId || null,
+    isAuthenticated: true,
+    tenantId: session.tenantId,
+    actorId: session.actorId,
+    authLevel: session.authLevel,
+    deprecated: session.deprecated === true,
+    deprecatedReason: session.deprecatedReason || null,
+  };
+}
+
+/**
+ * Resolve session from request headers/url, using env for cryptographic verification.
+ *
+ * Returns:
+ *  { ok: true, session }
+ *  { ok: false, status, error, code, details }
+ */
+export async function resolveSessionFromHeaders(request, env) {
+  // 1) Primary: Bearer token
+  const bearer = getBearerToken(request.headers);
+  if (bearer) {
+    const vr = await verifySessionToken(env, bearer);
+    if (!vr.ok) {
+      return {
+        ok: false,
+        status: 401,
+        error: "UNAUTHORIZED",
+        code: vr.code || "AUTH_INVALID",
+        details: vr.details || null,
+      };
+    }
+
+    const clean = sanitizeSession(vr.session);
+    if (!clean) {
+      return {
+        ok: false,
+        status: 403,
+        error: "FORBIDDEN",
+        code: "TENANT_REQUIRED",
+        details: null,
+      };
+    }
+
+    return { ok: true, session: clean };
+  }
+
+  // 2) Transitional: dev_token compatibility for existing UI
+  const devToken = getDevTokenFromUrl(request.url);
+  if (devToken) {
+    const compatPayload = devTokenToSession(devToken);
+    const clean = sanitizeSession(compatPayload);
+    if (!clean) {
+      return {
+        ok: false,
+        status: 401,
+        error: "UNAUTHORIZED",
+        code: "AUTH_DEV_TOKEN_INVALID",
+        details: null,
+      };
+    }
+    return { ok: true, session: clean };
+  }
+
+  // 3) No anonymous access
+  return {
+    ok: false,
+    status: 401,
+    error: "UNAUTHORIZED",
+    code: "AUTH_REQUIRED",
+    details: null,
   };
 }
