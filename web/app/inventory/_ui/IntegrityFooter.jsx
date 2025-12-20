@@ -1,3 +1,5 @@
 "use client";
 
-export { default } from "../../_ui/IntegrityFooter.jsx";
+export const runtime = "edge";
+
+export { default } from "@/app/_ui/IntegrityFooter.jsx";
