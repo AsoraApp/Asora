@@ -92,10 +92,12 @@ export default function InventoryReconciliationPage() {
     for (const it of items) {
       const itemId = it?.itemId;
       if (!itemId) continue;
+      if (focus && itemId !== focus) continue;
+
       const ledgerQty = ledgerTotals.get(itemId) || 0;
       const invQty = typeof it?.quantity === "number" ? it.quantity : null;
       const delta = invQty === null ? null : ledgerQty - invQty;
-      if (focus && itemId !== focus) continue;
+
       rows.push({ itemId, ledgerQty, invQty, delta });
     }
 
@@ -131,17 +133,13 @@ export default function InventoryReconciliationPage() {
 
   return (
     <main style={s.shell}>
-      <AdminHeader
-        title="Inventory Reconciliation"
-        subtitle="Ledger-derived quantities compared to inventory records."
-        freshnessSlot={
-          <LedgerFreshnessBar
-            lastFetchedUtc={lastFetchedUtc}
-            cacheStatus={cacheStatus}
-            onRefresh={() => load({ force: false })}
-            onForceRefresh={() => load({ force: true })}
-          />
-        }
+      <CompactBar here="Reconciliation" />
+
+      <LedgerFreshnessBar
+        lastFetchedUtc={lastFetchedUtc}
+        cacheStatus={cacheStatus}
+        onRefresh={() => load({ force: false })}
+        onForceRefresh={() => load({ force: true })}
       />
 
       <section style={s.card}>
