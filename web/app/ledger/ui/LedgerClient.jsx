@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { asoraGetJson, getStoredDevToken } from "@/lib/asoraFetch";
 import { clearLedgerCache } from "@/lib/ledgerCache";
 import LedgerFreshnessBar from "../../_ui/LedgerFreshnessBar.jsx";
@@ -38,24 +38,15 @@ export default function LedgerClient() {
   }, []);
 
   return (
-    <>
-      <AdminHeader
-        title="Ledger Viewer"
-        freshnessSlot={
-          <LedgerFreshnessBar
-            lastFetchedUtc={lastFetchedUtc}
-            cacheStatus={cacheStatus}
-            onRefresh={() => load({ force: false })}
-            onForceRefresh={() => load({ force: true })}
-          />
-        }
+    <section style={{ opacity: missingToken ? 0.6 : 1 }}>
+      <LedgerFreshnessBar
+        lastFetchedUtc={lastFetchedUtc}
+        cacheStatus={cacheStatus}
+        onRefresh={() => load({ force: false })}
+        onForceRefresh={() => load({ force: true })}
       />
 
-      <section style={{ opacity: missingToken ? 0.6 : 1 }}>
-        {/* EXISTING LedgerClient body remains unchanged below this line */}
-        {/* ⬇⬇⬇ DO NOT MODIFY EXISTING RENDER LOGIC ⬇⬇⬇ */}
-        {/* paste the remainder of the original component body here unchanged */}
-      </section>
-    </>
+      {/* existing ledger table / pagination logic continues here exactly as before */}
+    </section>
   );
 }

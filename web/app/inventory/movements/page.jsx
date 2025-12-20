@@ -84,10 +84,8 @@ export default function InventoryMovementsPage() {
 
   function exportCsv() {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `asora_inventory_movements_${ts}.csv`;
-
     downloadCsvFromRows(
-      filename,
+      `asora_inventory_movements_${ts}.csv`,
       ["ts", "ledgerEventId", "eventType", "itemId", "qtyDelta"],
       visible.map((e) => ({
         ts: e?.ts || "",
@@ -101,17 +99,13 @@ export default function InventoryMovementsPage() {
 
   return (
     <main style={s.shell}>
-      <AdminHeader
-        title="Inventory Movements"
-        subtitle="Ledger-derived item movements (read-only)."
-        freshnessSlot={
-          <LedgerFreshnessBar
-            lastFetchedUtc={lastFetchedUtc}
-            cacheStatus={cacheStatus}
-            onRefresh={() => load({ force: false })}
-            onForceRefresh={() => load({ force: true })}
-          />
-        }
+      <CompactBar here="Movements" />
+
+      <LedgerFreshnessBar
+        lastFetchedUtc={lastFetchedUtc}
+        cacheStatus={cacheStatus}
+        onRefresh={() => load({ force: false })}
+        onForceRefresh={() => load({ force: true })}
       />
 
       <section style={s.card}>
@@ -144,9 +138,13 @@ export default function InventoryMovementsPage() {
         {err ? <div style={s.err}>Error: {err}</div> : null}
         {filtered.length === 0 && !loading ? <div style={s.empty}>No movements.</div> : null}
 
-        {filtered.length > 0 ? (
+        {filtered.length > 0 && (
           <div style={s.pagerRow}>
-            <button style={s.pagerBtn} onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
+            <button
+              style={s.pagerBtn}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+            >
               Prev
             </button>
             <div style={s.pagerText}>
@@ -160,7 +158,7 @@ export default function InventoryMovementsPage() {
               Next
             </button>
           </div>
-        ) : null}
+        )}
 
         <div style={s.tableWrap}>
           <table style={s.table}>

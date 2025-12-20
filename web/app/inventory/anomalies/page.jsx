@@ -12,9 +12,7 @@ import { downloadCsvFromRows } from "@/app/_ui/csv.js";
 export const runtime = "edge";
 
 const PAGE_SIZE = 200;
-
 const FOCUS_STORE_KEY = "asora_view:anomalies:focusItemId";
-const SAVED_VIEWS_KEY = "asora_saved_views:anomalies:focusItemId";
 
 function itemHref(itemId) {
   return `/inventory/item?itemId=${encodeURIComponent(String(itemId))}`;
@@ -187,7 +185,14 @@ export default function InventoryAnomaliesPage() {
     const rows = [];
 
     for (const e of analysis.missingItemId) {
-      rows.push({ kind: "MISSING_ITEM_ID", ts: e?.ts || "", id: e?.id || "", itemId: "", qtyDelta: e?.qtyDelta ?? "" });
+      rows.push({
+        kind: "MISSING_ITEM_ID",
+        ts: e?.ts || "",
+        id: e?.id || "",
+        itemId: "",
+        qtyDelta: e?.qtyDelta ?? "",
+        derivedTotal: "",
+      });
     }
     for (const e of analysis.missingQtyDelta) {
       rows.push({
@@ -196,6 +201,7 @@ export default function InventoryAnomaliesPage() {
         id: e?.id || "",
         itemId: e?.itemId || "",
         qtyDelta: "",
+        derivedTotal: "",
       });
     }
     for (const e of negDeltaFiltered) {
@@ -205,6 +211,7 @@ export default function InventoryAnomaliesPage() {
         id: e?.id || "",
         itemId: e?.itemId || "",
         qtyDelta: e?.qtyDelta ?? "",
+        derivedTotal: "",
       });
     }
     for (const r of negTotalsFiltered) {
@@ -218,36 +225,19 @@ export default function InventoryAnomaliesPage() {
       });
     }
 
-    downloadCsvFromRows(
-      filename,
-      ["kind", "ts", "id", "itemId", "qtyDelta", "derivedTotal"],
-      rows.map((x) => ({
-        kind: x.kind,
-        ts: x.ts || "",
-        id: x.id || "",
-        itemId: x.itemId || "",
-        qtyDelta: x.qtyDelta === undefined ? "" : x.qtyDelta,
-        derivedTotal: x.derivedTotal === undefined ? "" : x.derivedTotal,
-      }))
-    );
+    downloadCsvFromRows(filename, ["kind", "ts", "id", "itemId", "qtyDelta", "derivedTotal"], rows);
   }
 
   return (
     <main style={s.shell}>
       <CompactBar here="Anomalies" />
 
-      <AdminHeader
-        title="Inventory Anomalies"
-        subtitle="Read-only integrity signals derived from ledger events."
-        rightSlot={
-          <LedgerFreshnessBar
-            lastFetchedUtc={lastFetchedUtc}
-            cacheStatus={cacheStatus}
-            loading={loading}
-            onRefresh={() => load({ force: false })}
-            onForceRefresh={() => load({ force: true })}
-          />
-        }
+      <LedgerFreshnessBar
+        lastFetchedUtc={lastFetchedUtc}
+        cacheStatus={cacheStatus}
+        loading={loading}
+        onRefresh={() => load({ force: false })}
+        onForceRefresh={() => load({ force: true })}
       />
 
       <section style={s.card}>
@@ -298,7 +288,9 @@ export default function InventoryAnomaliesPage() {
                 <tr key={String(e?.id || `${e?.ts || ""}:${idx}`)}>
                   <td style={s.td}><span style={s.mono}>{e?.ts || "—"}</span></td>
                   <td style={s.td}>{e?.eventType || "—"}</td>
-                  <td style={s.tdRight}><span style={s.mono}>{typeof e?.qtyDelta === "number" ? e.qtyDelta : "—"}</span></td>
+                  <td style={s.tdRight}>
+                    <span style={s.mono}>{typeof e?.qtyDelta === "number" ? e.qtyDelta : "—"}</span>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -331,9 +323,13 @@ export default function InventoryAnomaliesPage() {
                     <td style={s.td}>
                       {itemId ? (
                         <>
-                          <Link style={s.link} href={itemHref(itemId)}>Drill-down</Link>
+                          <Link style={s.link} href={itemHref(itemId)}>
+                            Drill-down
+                          </Link>
                           <span style={s.dot}>·</span>
-                          <Link style={s.linkSecondary} href={movementsHref(itemId)}>Movements</Link>
+                          <Link style={s.linkSecondary} href={movementsHref(itemId)}>
+                            Movements
+                          </Link>
                         </>
                       ) : (
                         "—"
@@ -373,9 +369,7 @@ export default function InventoryAnomaliesPage() {
                       <span style={s.mono}>{typeof e?.qtyDelta === "number" ? e.qtyDelta : "—"}</span>
                     </td>
                     <td style={s.td}>{e?.eventType || "—"}</td>
-                    <td style={s.td}>
-                      {itemId ? <Link style={s.link} href={itemHref(itemId)}>Drill-down</Link> : "—"}
-                    </td>
+                    <td style={s.td}>{itemId ? <Link style={s.link} href={itemHref(itemId)}>Drill-down</Link> : "—"}</td>
                   </tr>
                 );
               })}
