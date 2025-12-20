@@ -1,3 +1,5 @@
 "use client";
 
-export { downloadCsvFromRows } from "../../_ui/csv.js";
+export const runtime = "edge";
+
+export { downloadCsvFromRows } from "@/app/_ui/csv.js";
