@@ -1,3 +1,5 @@
 "use client";
 
-export { default } from "../../_ui/AdminHeader.jsx";
+export const runtime = "edge";
+
+export { default } from "@/app/_ui/AdminHeader.jsx";
