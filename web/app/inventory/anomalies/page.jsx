@@ -32,7 +32,9 @@ function safeWriteLocalStorage(key, value) {
   try {
     if (!value) localStorage.removeItem(key);
     else localStorage.setItem(key, value);
-  } catch {}
+  } catch {
+    // ignore
+  }
 }
 
 export default function InventoryAnomaliesPage() {
@@ -133,15 +135,15 @@ export default function InventoryAnomaliesPage() {
     return { missingItemId, missingQtyDelta, negativeDelta, negativeTotals };
   }, [events]);
 
-  const negDeltaFiltered = useMemo(
-    () => (focus ? analysis.negativeDelta.filter((e) => e?.itemId === focus) : analysis.negativeDelta),
-    [analysis.negativeDelta, focus]
-  );
+  const negDeltaFiltered = useMemo(() => {
+    if (!focus) return analysis.negativeDelta;
+    return analysis.negativeDelta.filter((e) => e?.itemId === focus);
+  }, [analysis.negativeDelta, focus]);
 
-  const negTotalsFiltered = useMemo(
-    () => (focus ? analysis.negativeTotals.filter((r) => r.itemId === focus) : analysis.negativeTotals),
-    [analysis.negativeTotals, focus]
-  );
+  const negTotalsFiltered = useMemo(() => {
+    if (!focus) return analysis.negativeTotals;
+    return analysis.negativeTotals.filter((r) => r.itemId === focus);
+  }, [analysis.negativeTotals, focus]);
 
   useEffect(() => setP1(1), [analysis.missingItemId.length]);
   useEffect(() => setP2(1), [analysis.missingQtyDelta.length]);
@@ -183,16 +185,44 @@ export default function InventoryAnomaliesPage() {
     const rows = [];
 
     for (const e of analysis.missingItemId) {
-      rows.push({ kind: "MISSING_ITEM_ID", ts: e?.ts || "", id: e?.id || "", itemId: "", qtyDelta: e?.qtyDelta ?? "" });
+      rows.push({
+        kind: "MISSING_ITEM_ID",
+        ts: e?.ts || "",
+        id: e?.id || "",
+        itemId: "",
+        qtyDelta: e?.qtyDelta ?? "",
+        derivedTotal: "",
+      });
     }
     for (const e of analysis.missingQtyDelta) {
-      rows.push({ kind: "MISSING_QTY_DELTA", ts: e?.ts || "", id: e?.id || "", itemId: e?.itemId || "", qtyDelta: "" });
+      rows.push({
+        kind: "MISSING_QTY_DELTA",
+        ts: e?.ts || "",
+        id: e?.id || "",
+        itemId: e?.itemId || "",
+        qtyDelta: "",
+        derivedTotal: "",
+      });
     }
     for (const e of negDeltaFiltered) {
-      rows.push({ kind: "NEGATIVE_QTY_DELTA", ts: e?.ts || "", id: e?.id || "", itemId: e?.itemId || "", qtyDelta: e?.qtyDelta ?? "" });
+      rows.push({
+        kind: "NEGATIVE_QTY_DELTA",
+        ts: e?.ts || "",
+        id: e?.id || "",
+        itemId: e?.itemId || "",
+        qtyDelta: e?.qtyDelta ?? "",
+        derivedTotal: "",
+      });
     }
     for (const r of negTotalsFiltered) {
-      rows.push({ kind: "NEGATIVE_DERIVED_TOTAL", ts: "", id: "", itemId: r.itemId, derivedTotal: r.derivedTotal });
+      rows.push({
+        kind: "NEGATIVE_DERIVED_TOTAL",
+        ts: "",
+        id: "",
+        itemId: r.itemId,
+        qtyDelta: "",
+        derivedTotal: r.derivedTotal,
+      });
     }
 
     downloadCsvFromRows(filename, ["kind", "ts", "id", "itemId", "qtyDelta", "derivedTotal"], rows);
@@ -210,15 +240,215 @@ export default function InventoryAnomaliesPage() {
         onForceRefresh={() => load({ force: true })}
       />
 
-      {/* rest of the UI unchanged */}
-      {/* cards + tables + IntegrityFooter exactly as before */}
+      <section style={s.card}>
+        <div style={s.controls}>
+          <button style={s.button} onClick={() => load({ force: false })} disabled={loading}>
+            Refresh (cached)
+          </button>
+          <button style={s.buttonSecondary} onClick={() => load({ force: true })} disabled={loading}>
+            Refresh (force)
+          </button>
+          <button style={s.buttonSecondary} onClick={exportCsv} disabled={loading || events.length === 0}>
+            Export CSV
+          </button>
+
+          <label style={s.label}>
+            Focus itemId
+            <input
+              style={s.input}
+              value={focusItemId}
+              onChange={(e) => setFocusItemId(e.target.value)}
+              placeholder="exact itemId"
+            />
+          </label>
+
+          <div style={s.meta}>
+            Events: <span style={s.mono}>{events.length}</span> | Computed at (UTC):{" "}
+            <span style={s.mono}>{computedAtUtc || "—"}</span>
+          </div>
+        </div>
+
+        {err ? <div style={s.err}>Error: {err}</div> : null}
+      </section>
+
+      <section style={s.card}>
+        <div style={s.sectionTitle}>Missing itemId</div>
+        <Pager list={analysis.missingItemId} page={p1} setPage={setP1} />
+        <div style={s.tableWrap}>
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={s.th}>ts</th>
+                <th style={s.th}>eventType</th>
+                <th style={s.thRight}>qtyDelta</th>
+              </tr>
+            </thead>
+            <tbody>
+              {slice(analysis.missingItemId, p1).map((e, idx) => (
+                <tr key={String(e?.id || `${e?.ts || ""}:${idx}`)}>
+                  <td style={s.td}><span style={s.mono}>{e?.ts || "—"}</span></td>
+                  <td style={s.td}>{e?.eventType || "—"}</td>
+                  <td style={s.tdRight}>
+                    <span style={s.mono}>{typeof e?.qtyDelta === "number" ? e.qtyDelta : "—"}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section style={s.card}>
+        <div style={s.sectionTitle}>Missing qtyDelta</div>
+        <Pager list={analysis.missingQtyDelta} page={p2} setPage={setP2} />
+        <div style={s.tableWrap}>
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={s.th}>ts</th>
+                <th style={s.th}>itemId</th>
+                <th style={s.th}>eventType</th>
+                <th style={s.th}>Links</th>
+              </tr>
+            </thead>
+            <tbody>
+              {slice(analysis.missingQtyDelta, p2).map((e, idx) => {
+                const itemId = typeof e?.itemId === "string" ? e.itemId : "";
+                const key = String(e?.id || `${e?.ts || ""}:${itemId}:${idx}`);
+                return (
+                  <tr key={key}>
+                    <td style={s.td}><span style={s.mono}>{e?.ts || "—"}</span></td>
+                    <td style={s.td}>{itemId ? <span style={s.mono}>{itemId}</span> : "—"}</td>
+                    <td style={s.td}>{e?.eventType || "—"}</td>
+                    <td style={s.td}>
+                      {itemId ? (
+                        <>
+                          <Link style={s.link} href={itemHref(itemId)}>
+                            Drill-down
+                          </Link>
+                          <span style={s.dot}>·</span>
+                          <Link style={s.linkSecondary} href={movementsHref(itemId)}>
+                            Movements
+                          </Link>
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section style={s.card}>
+        <div style={s.sectionTitle}>Negative qtyDelta</div>
+        <Pager list={negDeltaFiltered} page={p3} setPage={setP3} />
+        <div style={s.tableWrap}>
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={s.th}>ts</th>
+                <th style={s.th}>itemId</th>
+                <th style={s.thRight}>qtyDelta</th>
+                <th style={s.th}>eventType</th>
+                <th style={s.th}>Links</th>
+              </tr>
+            </thead>
+            <tbody>
+              {slice(negDeltaFiltered, p3).map((e, idx) => {
+                const itemId = typeof e?.itemId === "string" ? e.itemId : "";
+                const key = String(e?.id || `${e?.ts || ""}:${itemId}:${idx}`);
+                return (
+                  <tr key={key}>
+                    <td style={s.td}><span style={s.mono}>{e?.ts || "—"}</span></td>
+                    <td style={s.td}>{itemId ? <span style={s.mono}>{itemId}</span> : "—"}</td>
+                    <td style={{ ...s.tdRight, ...s.neg }}>
+                      <span style={s.mono}>{typeof e?.qtyDelta === "number" ? e.qtyDelta : "—"}</span>
+                    </td>
+                    <td style={s.td}>{e?.eventType || "—"}</td>
+                    <td style={s.td}>{itemId ? <Link style={s.link} href={itemHref(itemId)}>Drill-down</Link> : "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section style={s.card}>
+        <div style={s.sectionTitle}>Negative derived totals</div>
+        <Pager list={negTotalsFiltered} page={p4} setPage={setP4} />
+        <div style={s.tableWrap}>
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={s.th}>itemId</th>
+                <th style={s.thRight}>derivedTotal</th>
+                <th style={s.th}>Links</th>
+              </tr>
+            </thead>
+            <tbody>
+              {slice(negTotalsFiltered, p4).map((r) => (
+                <tr key={r.itemId}>
+                  <td style={s.td}><span style={s.mono}>{r.itemId}</span></td>
+                  <td style={{ ...s.tdRight, ...s.neg }}><span style={s.mono}>{r.derivedTotal}</span></td>
+                  <td style={s.td}>
+                    <Link style={s.link} href={itemHref(r.itemId)}>Drill-down</Link>
+                    <span style={s.dot}>·</span>
+                    <Link style={s.linkSecondary} href={movementsHref(r.itemId)}>Movements</Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <IntegrityFooter
+          ledgerEventsProcessed={events.length}
+          skipped={[
+            { reason: "missing itemId", count: analysis.missingItemId.length },
+            { reason: "missing qtyDelta", count: analysis.missingQtyDelta.length },
+          ]}
+          renderUtc={computedAtUtc || new Date().toISOString()}
+        />
+      </section>
     </main>
   );
 }
 
 const styles = {
   shell: { minHeight: "100vh", padding: 24 },
-  /* unchanged styles */
+  card: { border: "1px solid #e5e5e5", borderRadius: 12, padding: 16, marginBottom: 16, background: "#fff" },
+  controls: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" },
+  label: { display: "flex", flexDirection: "column", fontSize: 13, gap: 6 },
+  input: { width: 260, padding: "8px 10px", borderRadius: 10, border: "1px solid #ccc" },
+  button: { padding: "8px 12px", borderRadius: 10, background: "#111", color: "#fff", cursor: "pointer" },
+  buttonSecondary: { padding: "8px 12px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", cursor: "pointer" },
+  meta: { fontSize: 13, color: "#444" },
+  err: { color: "#b00020" },
+
+  sectionTitle: { fontWeight: 800, marginBottom: 8 },
+  pagerRow: { display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" },
+  pagerBtn: { padding: "6px 10px", borderRadius: 10, border: "1px solid #bbb", background: "#fff", cursor: "pointer" },
+  pagerBtnSecondary: { padding: "6px 10px", borderRadius: 10, border: "1px solid #bbb", background: "#f7f7f7", cursor: "pointer" },
+  pagerText: { fontSize: 13, color: "#333" },
+
+  tableWrap: { width: "100%", overflowX: "auto", marginTop: 10 },
+  table: { borderCollapse: "collapse", width: "100%" },
+  th: { textAlign: "left", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
+  thRight: { textAlign: "right", fontSize: 12, color: "#444", borderBottom: "1px solid #eee", padding: "10px 8px" },
+  td: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, verticalAlign: "top" },
+  tdRight: { padding: "10px 8px", borderBottom: "1px solid #f0f0f0", fontSize: 13, textAlign: "right", verticalAlign: "top" },
+
+  link: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
+  linkSecondary: { color: "#444", textDecoration: "none", fontSize: 13 },
+  dot: { color: "#777", padding: "0 6px" },
+
+  neg: { color: "#b00020", fontWeight: 700 },
+  mono: { fontFamily: "ui-monospace, monospace" },
 };
 
 const compact = styles;
