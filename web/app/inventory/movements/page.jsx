@@ -53,9 +53,7 @@ export default function InventoryMovementsPage() {
         const tb = b?.ts || "";
         if (ta < tb) return -1;
         if (ta > tb) return 1;
-        return String(a?.ledgerEventId || "").localeCompare(
-          String(b?.ledgerEventId || "")
-        );
+        return String(a?.ledgerEventId || "").localeCompare(String(b?.ledgerEventId || ""));
       });
 
       setEvents(sorted);
@@ -86,10 +84,8 @@ export default function InventoryMovementsPage() {
 
   function exportCsv() {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `asora_inventory_movements_${ts}.csv`;
-
     downloadCsvFromRows(
-      filename,
+      `asora_inventory_movements_${ts}.csv`,
       ["ts", "ledgerEventId", "eventType", "itemId", "qtyDelta"],
       visible.map((e) => ({
         ts: e?.ts || "",
@@ -103,15 +99,17 @@ export default function InventoryMovementsPage() {
 
   return (
     <main style={s.shell}>
+      <CompactBar here="Movements" />
+
+      <LedgerFreshnessBar
+        lastFetchedUtc={lastFetchedUtc}
+        cacheStatus={cacheStatus}
+        onRefresh={() => load({ force: false })}
+        onForceRefresh={() => load({ force: true })}
+      />
+
       <section style={s.card}>
         <div style={s.controls}>
-          <LedgerFreshnessBar
-            lastFetchedUtc={lastFetchedUtc}
-            cacheStatus={cacheStatus}
-            onRefresh={() => load({ force: false })}
-            onForceRefresh={() => load({ force: true })}
-          />
-
           <button style={s.button} onClick={() => load({ force: false })} disabled={loading}>
             Refresh (cached)
           </button>
@@ -142,7 +140,11 @@ export default function InventoryMovementsPage() {
 
         {filtered.length > 0 && (
           <div style={s.pagerRow}>
-            <button style={s.pagerBtn} onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
+            <button
+              style={s.pagerBtn}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+            >
               Prev
             </button>
             <div style={s.pagerText}>
@@ -177,11 +179,11 @@ export default function InventoryMovementsPage() {
                   <td style={s.td}><span style={s.mono}>{e?.itemId || ""}</span></td>
                   <td style={s.tdRight}><span style={s.mono}>{e?.qtyDelta ?? ""}</span></td>
                   <td style={s.td}>
-                    {e?.itemId && (
+                    {e?.itemId ? (
                       <Link style={s.link} href={itemHref(e.itemId)}>
                         Drill-down
                       </Link>
-                    )}
+                    ) : null}
                   </td>
                 </tr>
               ))}
