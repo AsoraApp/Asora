@@ -53,7 +53,9 @@ export default function InventoryMovementsPage() {
         const tb = b?.ts || "";
         if (ta < tb) return -1;
         if (ta > tb) return 1;
-        return String(a?.ledgerEventId || "").localeCompare(String(b?.ledgerEventId || ""));
+        return String(a?.ledgerEventId || "").localeCompare(
+          String(b?.ledgerEventId || "")
+        );
       });
 
       setEvents(sorted);
@@ -101,21 +103,15 @@ export default function InventoryMovementsPage() {
 
   return (
     <main style={s.shell}>
-      <AdminHeader
-        title="Inventory Movements"
-        subtitle="Ledger-derived item movements (read-only)."
-        freshnessSlot={
+      <section style={s.card}>
+        <div style={s.controls}>
           <LedgerFreshnessBar
             lastFetchedUtc={lastFetchedUtc}
             cacheStatus={cacheStatus}
             onRefresh={() => load({ force: false })}
             onForceRefresh={() => load({ force: true })}
           />
-        }
-      />
 
-      <section style={s.card}>
-        <div style={s.controls}>
           <button style={s.button} onClick={() => load({ force: false })} disabled={loading}>
             Refresh (cached)
           </button>
@@ -144,7 +140,7 @@ export default function InventoryMovementsPage() {
         {err ? <div style={s.err}>Error: {err}</div> : null}
         {filtered.length === 0 && !loading ? <div style={s.empty}>No movements.</div> : null}
 
-        {filtered.length > 0 ? (
+        {filtered.length > 0 && (
           <div style={s.pagerRow}>
             <button style={s.pagerBtn} onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
               Prev
@@ -160,7 +156,7 @@ export default function InventoryMovementsPage() {
               Next
             </button>
           </div>
-        ) : null}
+        )}
 
         <div style={s.tableWrap}>
           <table style={s.table}>
@@ -181,11 +177,11 @@ export default function InventoryMovementsPage() {
                   <td style={s.td}><span style={s.mono}>{e?.itemId || ""}</span></td>
                   <td style={s.tdRight}><span style={s.mono}>{e?.qtyDelta ?? ""}</span></td>
                   <td style={s.td}>
-                    {e?.itemId ? (
+                    {e?.itemId && (
                       <Link style={s.link} href={itemHref(e.itemId)}>
                         Drill-down
                       </Link>
-                    ) : null}
+                    )}
                   </td>
                 </tr>
               ))}
