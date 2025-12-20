@@ -1,96 +1,108 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { getStoredDevToken } from "@/lib/asoraFetch";
 
 export const runtime = "edge";
 
-const KEY = "asora_ui_density"; // "compact" | "comfortable"
+const DENSITY_KEY = "asora_ui:dense";
 
-function getInitial() {
-  if (typeof window === "undefined") return "comfortable";
+function safeReadBool(key, fallback) {
   try {
-    const v = window.localStorage.getItem(KEY);
-    return v === "compact" ? "compact" : "comfortable";
+    const v = localStorage.getItem(key);
+    if (v === null || v === undefined) return fallback;
+    return v === "1" || v === "true";
   } catch {
-    return "comfortable";
+    return fallback;
   }
 }
 
-export function useDensity() {
-  const [density, setDensity] = useState(getInitial());
+function safeWriteBool(key, value) {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // ignore
+  }
+}
+
+export function useDensity(defaultDense = true) {
+  const [dense, setDense] = useState(defaultDense);
 
   useEffect(() => {
-    // keep in sync if multiple tabs flip it
-    function onStorage(e) {
-      if (e.key === KEY) setDensity(e.newValue === "compact" ? "compact" : "comfortable");
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    setDense(safeReadBool(DENSITY_KEY, defaultDense));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function toggle() {
-    const next = density === "compact" ? "comfortable" : "compact";
-    setDensity(next);
-    try {
-      window.localStorage.setItem(KEY, next);
-    } catch {
-      // ignore
-    }
-  }
+  const setAndPersist = (next) => {
+    const v = typeof next === "function" ? Boolean(next(dense)) : Boolean(next);
+    setDense(v);
+    safeWriteBool(DENSITY_KEY, v);
+  };
 
-  return { density, isCompact: density === "compact", toggle };
+  return { dense, setDense: setAndPersist };
 }
 
-export default function CompactBar({ here }) {
-  const { isCompact, toggle } = useDensity();
+/**
+ * Minimal shared top bar used across read-only views.
+ * - Dev token display only (token entry UI lives in AdminHeader)
+ * - Optional actions provided via props
+ */
+export default function CompactBar({
+  title = "",
+  right = null,
+  actions = null,
+  style = null
+}) {
+  const devToken = useMemo(() => getStoredDevToken(), []);
 
   return (
-    <header style={styles.topbar}>
-      <div style={styles.brandRow}>
-        <div style={styles.brand}>Asora</div>
-
-        <div style={styles.nav}>
-          <Link href="/" style={styles.navLink}>
-            Home
-          </Link>
-          <span style={styles.navSep}>/</span>
-          <Link href="/inventory/items" style={styles.navLink}>
-            Inventory Items
-          </Link>
-          {here ? (
-            <>
-              <span style={styles.navSep}>/</span>
-              <span style={styles.navHere}>{here}</span>
-            </>
-          ) : null}
+    <div style={{ ...styles.bar, ...(style || null) }}>
+      <div style={styles.left}>
+        {title ? <div style={styles.title}>{title}</div> : <div style={styles.title}>Asora</div>}
+        <div style={styles.meta}>
+          <span style={styles.k}>dev_token:</span>{" "}
+          <span style={styles.v}>{devToken ? String(devToken) : "(not set)"}</span>
         </div>
-
-        <button style={styles.toggle} onClick={toggle} type="button" aria-label="Toggle compact density">
-          Compact: <span style={styles.toggleVal}>{isCompact ? "On" : "Off"}</span>
-        </button>
       </div>
-    </header>
+
+      <div style={styles.right}>
+        {actions ? <div style={styles.actions}>{actions}</div> : null}
+        {right}
+      </div>
+    </div>
   );
 }
 
 const styles = {
-  topbar: { marginBottom: 14 },
-  brandRow: { display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 12 },
-  brand: { fontSize: 16, fontWeight: 800, letterSpacing: 0.2 },
-  nav: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-  navLink: { color: "#0b57d0", textDecoration: "none", fontSize: 13 },
-  navHere: { color: "#222", fontSize: 13, fontWeight: 700 },
-  navSep: { color: "#999", fontSize: 13 },
-
-  toggle: {
-    padding: "6px 10px",
-    borderRadius: 10,
-    border: "1px solid #bbb",
-    background: "#fff",
-    cursor: "pointer",
-    fontSize: 13,
-    color: "#111",
+  bar: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: "rgba(255,255,255,0.02)",
+    marginBottom: 12
   },
-  toggleVal: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+  left: { display: "flex", flexDirection: "column", gap: 4, minWidth: 0 },
+  title: { fontSize: 13, fontWeight: 800, opacity: 0.95 },
+  meta: {
+    fontSize: 12,
+    opacity: 0.85,
+    display: "flex",
+    gap: 6,
+    alignItems: "center",
+    minWidth: 0
+  },
+  k: { opacity: 0.8 },
+  v: {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    maxWidth: 520
+  },
+  right: { display: "flex", gap: 10, alignItems: "center", justifyContent: "flex-end" },
+  actions: { display: "flex", gap: 8, alignItems: "center" }
 };
