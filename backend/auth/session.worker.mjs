@@ -1,11 +1,7 @@
-// backend/src/auth/session.worker.mjs
-// U10: Session resolution layer.
+// backend/auth/session.worker.mjs
+// U10: Session resolution layer. Tenant identity is session-derived only.
 // - Primary: Authorization: Bearer <signed token>
-// - Transitional (deprecated): dev_token query param compatibility bridge
-//
-// FAIL-CLOSED:
-// - No anonymous access.
-// - Resolves exactly one tenantId, or returns a deterministic denial.
+// - Transitional (deprecated): dev_token compatibility bridge
 
 import { verifySessionToken } from "./token.worker.mjs";
 import { devTokenToSession } from "./devTokenCompat.worker.mjs";
@@ -30,35 +26,32 @@ function getDevTokenFromUrl(url) {
 }
 
 function sanitizeSession(session) {
+  // Fail-closed sanity checks to avoid ambiguous tenant resolution.
   if (!session || typeof session !== "object") return null;
-
   if (!session.tenantId || typeof session.tenantId !== "string") return null;
   if (!session.actorId || typeof session.actorId !== "string") return null;
   if (!session.authLevel || typeof session.authLevel !== "string") return null;
 
-  // Stable shape expected by existing codepaths.
-  // Keep token field present for backward compatibility (non-authoritative).
   return {
-    isAuthenticated: true,
-    token: null,
     tenantId: session.tenantId,
     actorId: session.actorId,
     authLevel: session.authLevel,
+    // optional metadata (non-authoritative):
     deprecated: session.deprecated === true,
     deprecatedReason: session.deprecatedReason || null,
   };
 }
 
 /**
- * Resolve session from request headers/url, using env for cryptographic verification.
+ * Resolve exactly one tenantId from request headers.
  *
  * Returns:
  *  { ok: true, session }
  *  { ok: false, status, error, code, details }
  */
-export async function resolveSessionFromHeaders(request, env) {
+export async function resolveSessionFromHeaders(req, env) {
   // 1) Primary: Bearer token
-  const bearer = getBearerToken(request.headers);
+  const bearer = getBearerToken(req.headers);
   if (bearer) {
     const vr = await verifySessionToken(env, bearer);
     if (!vr.ok) {
@@ -70,7 +63,6 @@ export async function resolveSessionFromHeaders(request, env) {
         details: vr.details || null,
       };
     }
-
     const clean = sanitizeSession(vr.session);
     if (!clean) {
       return {
@@ -81,15 +73,15 @@ export async function resolveSessionFromHeaders(request, env) {
         details: null,
       };
     }
-
     return { ok: true, session: clean };
   }
 
-  // 2) Transitional: dev_token compatibility (deprecated; UI still relies on this)
-  const devToken = getDevTokenFromUrl(request.url);
+  // 2) Transitional: dev_token from query param
+  // This keeps U9 UI working unchanged while U10 introduces real auth.
+  const devToken = getDevTokenFromUrl(req.url);
   if (devToken) {
-    const compatPayload = devTokenToSession(devToken);
-    const clean = sanitizeSession(compatPayload);
+    const compat = devTokenToSession(devToken);
+    const clean = sanitizeSession(compat);
     if (!clean) {
       return {
         ok: false,
