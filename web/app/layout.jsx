@@ -1,3 +1,5 @@
+"use client";
+
 import DevTokenBar from "@/app/ui/DevTokenBar";
 import GlobalItemSearch from "@/app/ui/GlobalItemSearch";
 
