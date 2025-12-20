@@ -1,44 +1,93 @@
 "use client";
 
-export default function IntegrityFooter({ ledgerEventsProcessed, skipped, renderUtc }) {
-  const list = Array.isArray(skipped) ? skipped : [];
+export const runtime = "edge";
+
+export default function IntegrityFooter({
+  processedCount = 0,
+  skippedCount = 0,
+  skippedReasons = {},
+  renderedAtUtc,
+}) {
+  const ts = renderedAtUtc || new Date().toISOString();
+
   return (
-    <div style={styles.wrap}>
+    <footer style={styles.shell}>
       <div style={styles.row}>
-        <span style={styles.k}>Ledger events processed</span>
-        <span style={styles.vMono}>{String(ledgerEventsProcessed ?? 0)}</span>
+        <span style={styles.k}>ledger events processed</span>
+        <span style={styles.v}>{processedCount}</span>
       </div>
 
       <div style={styles.row}>
-        <span style={styles.k}>Rendered at (UTC)</span>
-        <span style={styles.vMono}>{renderUtc || "—"}</span>
+        <span style={styles.k}>events skipped</span>
+        <span style={styles.v}>{skippedCount}</span>
       </div>
 
-      {list.length ? (
-        <div style={styles.skipped}>
-          <div style={styles.skippedTitle}>Skipped</div>
-          <ul style={styles.ul}>
-            {list.map((x, i) => (
-              <li key={i} style={styles.li}>
-                <span style={styles.vMono}>{x?.reason || "unknown"}</span>:{" "}
-                <span style={styles.vMono}>{String(x?.count ?? 0)}</span>
-              </li>
-            ))}
-          </ul>
+      {skippedReasons && Object.keys(skippedReasons).length > 0 ? (
+        <div style={styles.reasons}>
+          {Object.entries(skippedReasons).map(([reason, count]) => (
+            <div key={reason} style={styles.reasonRow}>
+              <span style={styles.k}>{reason}</span>
+              <span style={styles.v}>{count}</span>
+            </div>
+          ))}
         </div>
       ) : null}
-    </div>
+
+      <div style={styles.hr} />
+
+      <div style={styles.meta}>
+        <span>Deterministic, read-only derived view.</span>
+        <span>UTC render time:</span>
+        <span style={styles.mono}>{ts}</span>
+      </div>
+    </footer>
   );
 }
 
 const styles = {
-  wrap: { marginTop: 14, borderTop: "1px solid #eee", paddingTop: 12, display: "flex", flexDirection: "column", gap: 6 },
-  row: { display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" },
-  k: { fontSize: 12, color: "#555" },
-  vMono: { fontSize: 12, color: "#111", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
-
-  skipped: { marginTop: 8 },
-  skippedTitle: { fontSize: 12, fontWeight: 800, marginBottom: 6 },
-  ul: { margin: 0, paddingLeft: 18 },
-  li: { fontSize: 12, color: "#333", lineHeight: 1.4 },
+  shell: {
+    marginTop: 16,
+    padding: 12,
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: "rgba(0,0,0,0.20)",
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+  },
+  row: {
+    display: "flex",
+    justifyContent: "space-between",
+    fontSize: 12,
+  },
+  reasons: {
+    marginTop: 4,
+    paddingLeft: 6,
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+  },
+  reasonRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    fontSize: 12,
+    opacity: 0.85,
+  },
+  k: { opacity: 0.7 },
+  v: { fontWeight: 700 },
+  hr: {
+    height: 1,
+    background: "rgba(255,255,255,0.10)",
+    margin: "6px 0",
+  },
+  meta: {
+    display: "flex",
+    gap: 6,
+    flexWrap: "wrap",
+    fontSize: 11,
+    opacity: 0.7,
+  },
+  mono: {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  },
 };
