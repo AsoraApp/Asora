@@ -16,6 +16,10 @@ function parsePath(pathname) {
   return (pathname || "/").replace(/\/+$/g, "") || "/";
 }
 
+function methodNotAllowed(baseHeaders) {
+  return json(405, { error: "METHOD_NOT_ALLOWED", code: "METHOD_NOT_ALLOWED", details: null }, baseHeaders);
+}
+
 async function readJson(request) {
   const text = await request.text();
   if (!text) return null;
@@ -35,6 +39,27 @@ function waitUntilEval(cfctx, p) {
 }
 
 /**
+ * Deterministic stable JSON stringify (sorted keys, recursive).
+ * - No randomness
+ * - Stable across runs for equivalent objects
+ */
+function stableStringify(value) {
+  if (value === null || value === undefined) return "null";
+  if (typeof value !== "object") return JSON.stringify(value);
+
+  if (Array.isArray(value)) {
+    return "[" + value.map((v) => stableStringify(v)).join(",") + "]";
+  }
+
+  const keys = Object.keys(value).sort();
+  const parts = [];
+  for (const k of keys) {
+    parts.push(JSON.stringify(k) + ":" + stableStringify(value[k]));
+  }
+  return "{" + parts.join(",") + "}";
+}
+
+/**
  * Deterministic FNV-1a 32-bit hash.
  * Returns 8-hex string.
  */
@@ -49,13 +74,14 @@ function fnv1a32Hex(input) {
 }
 
 function stableRuleId(ctx, rule) {
+  // U13: ruleId must NOT depend on requestId.
+  // It should be stable for the same logical rule content within a tenant.
   const tenantId = ctx?.tenantId ?? "";
-  const requestId = ctx?.requestId ?? "";
   const type = rule?.type ?? "";
   const scope = rule?.scope ?? "";
-  const target = rule?.target ? JSON.stringify(rule.target) : "";
-  const params = rule?.params ? JSON.stringify(rule.params) : "";
-  const fp = `${tenantId}|${requestId}|${type}|${scope}|${target}|${params}`;
+  const target = rule?.target ? stableStringify(rule.target) : "";
+  const params = rule?.params ? stableStringify(rule.params) : "";
+  const fp = `${tenantId}|${type}|${scope}|${target}|${params}`;
   return `ar_${fnv1a32Hex(fp)}`;
 }
 
@@ -74,9 +100,63 @@ function sortByCreatedAtDescThenId(arr) {
     });
 }
 
+function isDev(ctx) {
+  return ctx?.session?.isAuthenticated === true && ctx?.session?.authLevel === "dev";
+}
+
+function denyDevOnly(ctx, env, cfctx, baseHeaders, pathname, reasonCode) {
+  emitAudit(
+    ctx,
+    {
+      eventCategory: "SECURITY",
+      eventType: "AUTHZ_DENIED",
+      objectType: "alerts",
+      objectId: pathname,
+      decision: "DENY",
+      reasonCode: reasonCode || "AUTHZ_DENIED",
+      factsSnapshot: { authLevel: ctx?.session?.authLevel ?? null },
+    },
+    env,
+    cfctx
+  );
+  return json(403, { error: "FORBIDDEN", code: "AUTHZ_DENIED", details: null }, baseHeaders);
+}
+
+async function safeLoad(env, tenantId, name, defaultValue) {
+  try {
+    return await loadTenantCollection(env, tenantId, name, defaultValue);
+  } catch (e) {
+    const code = e?.code || e?.message || "STORAGE_ERROR";
+    // Deterministic fail-closed for infra issues
+    if (code === "KV_NOT_BOUND") {
+      return { __err: { status: 503, error: "SERVICE_UNAVAILABLE", code: "KV_NOT_BOUND" } };
+    }
+    if (code === "TENANT_NOT_RESOLVED") {
+      return { __err: { status: 403, error: "FORBIDDEN", code: "TENANT_REQUIRED" } };
+    }
+    return { __err: { status: 500, error: "INTERNAL_ERROR", code: "STORAGE_ERROR" } };
+  }
+}
+
+async function safeSave(env, tenantId, name, value) {
+  try {
+    await saveTenantCollection(env, tenantId, name, value);
+    return { ok: true };
+  } catch (e) {
+    const code = e?.code || e?.message || "STORAGE_ERROR";
+    if (code === "KV_NOT_BOUND") {
+      return { ok: false, status: 503, error: "SERVICE_UNAVAILABLE", code: "KV_NOT_BOUND" };
+    }
+    if (code === "TENANT_NOT_RESOLVED") {
+      return { ok: false, status: 403, error: "FORBIDDEN", code: "TENANT_REQUIRED" };
+    }
+    return { ok: false, status: 500, error: "INTERNAL_ERROR", code: "STORAGE_ERROR" };
+  }
+}
+
 /**
  * Router for /api/alerts*
- * IMPORTANT: env is required because jsonStore.worker.mjs is now env-plumbed.
+ * IMPORTANT: env is required because jsonStore.worker.mjs is env-plumbed.
  */
 export async function alertsFetchRouter(ctx, request, baseHeaders, cfctx, env) {
   const u = new URL(request.url);
@@ -88,7 +168,10 @@ export async function alertsFetchRouter(ctx, request, baseHeaders, cfctx, env) {
 
   // DEV: manual evaluation trigger (browser-friendly)
   // GET /api/alerts/dev/evaluate
-  if (method === "GET" && pathname === "/api/alerts/dev/evaluate") {
+  if (pathname === "/api/alerts/dev/evaluate") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    if (!isDev(ctx)) return denyDevOnly(ctx, env, cfctx, baseHeaders, pathname, "DEV_ONLY");
+
     emitAudit(
       ctx,
       {
@@ -112,7 +195,10 @@ export async function alertsFetchRouter(ctx, request, baseHeaders, cfctx, env) {
 
   // DEV: create LOW_STOCK ITEM rule via query params
   // GET /api/alerts/rules/dev-low-stock?itemId=item-1&thresholdQty=5&enabled=true&note=...
-  if (method === "GET" && pathname === "/api/alerts/rules/dev-low-stock") {
+  if (pathname === "/api/alerts/rules/dev-low-stock") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    if (!isDev(ctx)) return denyDevOnly(ctx, env, cfctx, baseHeaders, pathname, "DEV_ONLY");
+
     const itemId = u.searchParams.get("itemId");
     const thresholdQtyRaw = u.searchParams.get("thresholdQty");
     const enabledRaw = u.searchParams.get("enabled");
@@ -149,7 +235,10 @@ export async function alertsFetchRouter(ctx, request, baseHeaders, cfctx, env) {
       return json(400, { error: "BAD_REQUEST", code: v.code, details: v.details || null }, baseHeaders);
     }
 
-    const rules = (await loadTenantCollection(env, ctx.tenantId, "alert_rules", [])) || [];
+    const loaded = await safeLoad(env, ctx.tenantId, "alert_rules", []);
+    if (loaded && loaded.__err) return json(loaded.__err.status, { error: loaded.__err.error, code: loaded.__err.code, details: null }, baseHeaders);
+
+    const rules = loaded || [];
     const arr = Array.isArray(rules) ? rules : [];
     const now = nowUtcIso();
 
@@ -168,7 +257,8 @@ export async function alertsFetchRouter(ctx, request, baseHeaders, cfctx, env) {
     const rule = { ruleId: stableRuleId(ctx, ruleDraft), ...ruleDraft };
 
     arr.push(rule);
-    await saveTenantCollection(env, ctx.tenantId, "alert_rules", arr);
+    const saved = await safeSave(env, ctx.tenantId, "alert_rules", arr);
+    if (!saved.ok) return json(saved.status, { error: saved.error, code: saved.code, details: null }, baseHeaders);
 
     emitAudit(
       ctx,
@@ -191,119 +281,137 @@ export async function alertsFetchRouter(ctx, request, baseHeaders, cfctx, env) {
   }
 
   // GET /api/alerts/rules
-  if (method === "GET" && pathname === "/api/alerts/rules") {
-    const rules = (await loadTenantCollection(env, ctx.tenantId, "alert_rules", [])) || [];
-    const arr = Array.isArray(rules) ? rules : [];
-    const out = arr.filter((r) => r && !r.deletedAtUtc);
+  if (pathname === "/api/alerts/rules") {
+    if (method === "GET") {
+      const loaded = await safeLoad(env, ctx.tenantId, "alert_rules", []);
+      if (loaded && loaded.__err) return json(loaded.__err.status, { error: loaded.__err.error, code: loaded.__err.code, details: null }, baseHeaders);
 
-    emitAudit(
-      ctx,
-      {
-        eventCategory: "ALERT",
-        eventType: "ALERT_RULES_LIST",
-        objectType: "alert_rule",
-        objectId: null,
-        decision: "ALLOW",
-        reasonCode: "OK",
-        factsSnapshot: { count: out.length },
-      },
-      env,
-      cfctx
-    );
+      const rules = loaded || [];
+      const arr = Array.isArray(rules) ? rules : [];
+      const out = arr.filter((r) => r && !r.deletedAtUtc);
 
-    return json(200, { rules: out }, baseHeaders);
-  }
-
-  // POST /api/alerts/rules
-  if (method === "POST" && pathname === "/api/alerts/rules") {
-    const body = await readJson(request);
-    if (body === "__INVALID_JSON__") {
       emitAudit(
         ctx,
         {
-          eventCategory: "SECURITY",
-          eventType: "VALIDATION_FAILED",
-          objectType: "request",
-          objectId: pathname,
-          decision: "DENY",
-          reasonCode: "INVALID_JSON",
-          factsSnapshot: { method, path: pathname },
-        },
-        env,
-        cfctx
-      );
-      return json(400, { error: "BAD_REQUEST", code: "INVALID_JSON", details: null }, baseHeaders);
-    }
-
-    const input = body || {};
-    const v = validateAlertRuleInput(input);
-    if (!v.ok) {
-      emitAudit(
-        ctx,
-        {
-          eventCategory: "SECURITY",
-          eventType: "VALIDATION_FAILED",
+          eventCategory: "ALERT",
+          eventType: "ALERT_RULES_LIST",
           objectType: "alert_rule",
           objectId: null,
-          decision: "DENY",
-          reasonCode: v.code,
-          factsSnapshot: { details: v.details || null },
+          decision: "ALLOW",
+          reasonCode: "OK",
+          factsSnapshot: { count: out.length },
         },
         env,
         cfctx
       );
-      return json(400, { error: "BAD_REQUEST", code: v.code, details: v.details || null }, baseHeaders);
+
+      return json(200, { rules: out }, baseHeaders);
     }
 
-    const rules = (await loadTenantCollection(env, ctx.tenantId, "alert_rules", [])) || [];
-    const arr = Array.isArray(rules) ? rules : [];
-    const now = nowUtcIso();
+    if (method === "POST") {
+      // U13: writes are dev-only
+      if (!isDev(ctx)) return denyDevOnly(ctx, env, cfctx, baseHeaders, pathname, "DEV_ONLY");
 
-    const ruleDraft = {
-      createdAtUtc: now,
-      updatedAtUtc: now,
-      deletedAtUtc: null,
-      enabled: input.enabled !== false,
-      type: input.type,
-      scope: input.scope,
-      target: input.target || null,
-      params: input.params || {},
-      note: input.note || null,
-    };
+      const body = await readJson(request);
+      if (body === "__INVALID_JSON__") {
+        emitAudit(
+          ctx,
+          {
+            eventCategory: "SECURITY",
+            eventType: "VALIDATION_FAILED",
+            objectType: "request",
+            objectId: pathname,
+            decision: "DENY",
+            reasonCode: "INVALID_JSON",
+            factsSnapshot: { method, path: pathname },
+          },
+          env,
+          cfctx
+        );
+        return json(400, { error: "BAD_REQUEST", code: "INVALID_JSON", details: null }, baseHeaders);
+      }
 
-    const rule = { ruleId: stableRuleId(ctx, ruleDraft), ...ruleDraft };
+      const input = body || {};
+      const v = validateAlertRuleInput(input);
+      if (!v.ok) {
+        emitAudit(
+          ctx,
+          {
+            eventCategory: "SECURITY",
+            eventType: "VALIDATION_FAILED",
+            objectType: "alert_rule",
+            objectId: null,
+            decision: "DENY",
+            reasonCode: v.code,
+            factsSnapshot: { details: v.details || null },
+          },
+          env,
+          cfctx
+        );
+        return json(400, { error: "BAD_REQUEST", code: v.code, details: v.details || null }, baseHeaders);
+      }
 
-    arr.push(rule);
-    await saveTenantCollection(env, ctx.tenantId, "alert_rules", arr);
+      const loaded = await safeLoad(env, ctx.tenantId, "alert_rules", []);
+      if (loaded && loaded.__err) return json(loaded.__err.status, { error: loaded.__err.error, code: loaded.__err.code, details: null }, baseHeaders);
 
-    emitAudit(
-      ctx,
-      {
-        eventCategory: "ALERT",
-        eventType: "ALERT_RULE_CREATE",
-        objectType: "alert_rule",
-        objectId: rule.ruleId,
-        decision: "ALLOW",
-        reasonCode: "CREATED",
-        factsSnapshot: { type: rule.type, scope: rule.scope, enabled: rule.enabled },
-      },
-      env,
-      cfctx
-    );
+      const rules = loaded || [];
+      const arr = Array.isArray(rules) ? rules : [];
+      const now = nowUtcIso();
 
-    waitUntilEval(cfctx, evaluateAlertsOnce(ctx.tenantId, "RULE_CREATED"));
+      const ruleDraft = {
+        createdAtUtc: now,
+        updatedAtUtc: now,
+        deletedAtUtc: null,
+        enabled: input.enabled !== false,
+        type: input.type,
+        scope: input.scope,
+        target: input.target || null,
+        params: input.params || {},
+        note: input.note || null,
+      };
 
-    return json(201, { rule }, baseHeaders);
+      const rule = { ruleId: stableRuleId(ctx, ruleDraft), ...ruleDraft };
+
+      arr.push(rule);
+      const saved = await safeSave(env, ctx.tenantId, "alert_rules", arr);
+      if (!saved.ok) return json(saved.status, { error: saved.error, code: saved.code, details: null }, baseHeaders);
+
+      emitAudit(
+        ctx,
+        {
+          eventCategory: "ALERT",
+          eventType: "ALERT_RULE_CREATE",
+          objectType: "alert_rule",
+          objectId: rule.ruleId,
+          decision: "ALLOW",
+          reasonCode: "CREATED",
+          factsSnapshot: { type: rule.type, scope: rule.scope, enabled: rule.enabled },
+        },
+        env,
+        cfctx
+      );
+
+      waitUntilEval(cfctx, evaluateAlertsOnce(ctx.tenantId, "RULE_CREATED"));
+
+      return json(201, { rule }, baseHeaders);
+    }
+
+    return methodNotAllowed(baseHeaders);
   }
 
   // GET /api/alerts
-  if (method === "GET" && pathname === "/api/alerts") {
+  if (pathname === "/api/alerts") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+
     const status = (u.searchParams.get("status") || "").toUpperCase() || null;
     if (status && !["OPEN", "ACKNOWLEDGED", "CLOSED"].includes(status)) {
       return json(400, { error: "BAD_REQUEST", code: "INVALID_STATUS_FILTER", details: { status } }, baseHeaders);
     }
 
-    const alerts = (await loadTenantCollection(env, ctx.tenantId, "alerts", [])) || [];
+    const loaded = await safeLoad(env, ctx.tenantId, "alerts", []);
+    if (loaded && loaded.__err) return json(loaded.__err.status, { error: loaded.__err.error, code: loaded.__err.code, details: null }, baseHeaders);
+
+    const alerts = loaded || [];
     const arr = Array.isArray(alerts) ? alerts : [];
     const out = sortByCreatedAtDescThenId(arr).filter((a) => (status ? a?.status === status : true));
 
@@ -325,5 +433,6 @@ export async function alertsFetchRouter(ctx, request, baseHeaders, cfctx, env) {
     return json(200, { alerts: out }, baseHeaders);
   }
 
+  // For any other /api/alerts* path, explicitly return null (router fallthrough will 404)
   return null;
 }
