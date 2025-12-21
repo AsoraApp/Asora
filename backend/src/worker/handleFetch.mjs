@@ -10,13 +10,39 @@ import { alertsFetchRouter } from "./alerts.worker.mjs";
 import { notificationsFetchRouter } from "./notifications.worker.mjs";
 
 import { loadTenantCollection } from "../storage/jsonStore.worker.mjs";
+import { auditEventsFetch } from "./audit.worker.mjs";
 
-const BUILD_STAMP = "u12-audit-fix-env-plumbing-2025-12-20T00:00Z"; // CHANGE THIS ON EACH DEPLOY
+const BUILD_STAMP = "u13-enterprise-hardening-2025-12-20T23:59Z"; // CHANGE THIS ON EACH DEPLOY
+
+function classifyRequest(request, urlLike) {
+  // foundation only: no enforcement in U13
+  if ((request.method || "GET").toUpperCase() !== "GET") return "write";
+  if ((urlLike?.pathname || "").startsWith("/api/")) return "read";
+  return "infra";
+}
 
 function json(statusCode, body, headersObj) {
   const h = new Headers(headersObj || {});
   h.set("Content-Type", "application/json; charset=utf-8");
   return new Response(JSON.stringify(body), { status: statusCode, headers: h });
+}
+
+function healthResponse(baseHeaders) {
+  return json(200, { ok: true }, baseHeaders);
+}
+
+function metaResponse(request, baseHeaders) {
+  return json(
+    200,
+    {
+      service: "asora",
+      env: "production",
+      region: request.cf?.colo || "unknown",
+      build: BUILD_STAMP,
+      runtime: "cloudflare-worker",
+    },
+    baseHeaders
+  );
 }
 
 function parsePath(pathname) {
@@ -89,6 +115,20 @@ export async function handleFetch(request, env, cfctx) {
 
   const requestId = getOrCreateRequestIdFromHeaders(request.headers);
   const baseHeaders = { "X-Request-Id": requestId };
+
+  // U13 — infra endpoints (no auth, no KV, no side effects, always fast)
+  if (pathname === "/__health") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    return healthResponse(baseHeaders);
+  }
+  if (pathname === "/__meta") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    return metaResponse(request, baseHeaders);
+  }
+
+  // U13 — classification foundation (no limits yet)
+  const requestClass = classifyRequest(request, { pathname });
+  // requestClass intentionally unused for now (U13 foundation only)
 
   // Public
   if (pathname === "/__build") {
@@ -170,6 +210,12 @@ export async function handleFetch(request, env, cfctx) {
     }
   }
 
+  // U13 — audit read access (read-only)
+  if (pathname === "/api/audit/events") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    return auditEventsFetch(ctx, baseHeaders, env, cfctx);
+  }
+
   // Inventory read endpoints
   if (pathname === "/api/inventory/items") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
@@ -204,87 +250,87 @@ export async function handleFetch(request, env, cfctx) {
   // Ledger events
   if (pathname === "/api/ledger/events") {
     if (method === "GET") {
-  const sp = u.searchParams;
+      const sp = u.searchParams;
 
-  // ---- limit ----
-  const rawLimit = sp.get("limit");
-  const limit = rawLimit === null ? 500 : Number(rawLimit);
-  if (!Number.isInteger(limit) || limit <= 0 || limit > 2000) {
-    return json(400, { error: "BAD_REQUEST", code: "INVALID_LIMIT", details: { limit: rawLimit } }, baseHeaders);
-  }
+      // ---- limit ----
+      const rawLimit = sp.get("limit");
+      const limit = rawLimit === null ? 500 : Number(rawLimit);
+      if (!Number.isInteger(limit) || limit <= 0 || limit > 2000) {
+        return json(400, { error: "BAD_REQUEST", code: "INVALID_LIMIT", details: { limit: rawLimit } }, baseHeaders);
+      }
 
-  // ---- order ----
-  const order = (sp.get("order") || "desc").toLowerCase();
-  if (order !== "asc" && order !== "desc") {
-    return json(400, { error: "BAD_REQUEST", code: "INVALID_ORDER", details: { order } }, baseHeaders);
-  }
+      // ---- order ----
+      const order = (sp.get("order") || "desc").toLowerCase();
+      if (order !== "asc" && order !== "desc") {
+        return json(400, { error: "BAD_REQUEST", code: "INVALID_ORDER", details: { order } }, baseHeaders);
+      }
 
-  // ---- time bounds ----
-  const before = sp.get("before");
-  const after = sp.get("after");
-  if (before && after) {
-    return json(400, { error: "BAD_REQUEST", code: "BEFORE_AND_AFTER", details: null }, baseHeaders);
-  }
+      // ---- time bounds ----
+      const before = sp.get("before");
+      const after = sp.get("after");
+      if (before && after) {
+        return json(400, { error: "BAD_REQUEST", code: "BEFORE_AND_AFTER", details: null }, baseHeaders);
+      }
 
-  const beforeTs = before ? Date.parse(before) : null;
-  const afterTs = after ? Date.parse(after) : null;
-  if ((before && !Number.isFinite(beforeTs)) || (after && !Number.isFinite(afterTs))) {
-    return json(400, { error: "BAD_REQUEST", code: "INVALID_TIMESTAMP", details: { before, after } }, baseHeaders);
-  }
+      const beforeTs = before ? Date.parse(before) : null;
+      const afterTs = after ? Date.parse(after) : null;
+      if ((before && !Number.isFinite(beforeTs)) || (after && !Number.isFinite(afterTs))) {
+        return json(400, { error: "BAD_REQUEST", code: "INVALID_TIMESTAMP", details: { before, after } }, baseHeaders);
+      }
 
-  // ---- item filter ----
-  const itemId = sp.get("itemId");
+      // ---- item filter ----
+      const itemId = sp.get("itemId");
 
-  // ---- load ----
-  const all = (await loadTenantCollection(env, ctx.tenantId, "ledger_events", [])) || [];
-  let rows = Array.isArray(all) ? all.slice() : [];
+      // ---- load ----
+      const all = (await loadTenantCollection(env, ctx.tenantId, "ledger_events", [])) || [];
+      let rows = Array.isArray(all) ? all.slice() : [];
 
-  if (itemId) {
-    rows = rows.filter((e) => e?.itemId === itemId);
-  }
-  if (beforeTs !== null) {
-    rows = rows.filter((e) => Date.parse(e?.createdAtUtc) < beforeTs);
-  }
-  if (afterTs !== null) {
-    rows = rows.filter((e) => Date.parse(e?.createdAtUtc) > afterTs);
-  }
+      if (itemId) {
+        rows = rows.filter((e) => e?.itemId === itemId);
+      }
+      if (beforeTs !== null) {
+        rows = rows.filter((e) => Date.parse(e?.createdAtUtc) < beforeTs);
+      }
+      if (afterTs !== null) {
+        rows = rows.filter((e) => Date.parse(e?.createdAtUtc) > afterTs);
+      }
 
-  // ---- deterministic sort (asc base) ----
-  rows.sort((a, b) => {
-    const at = String(a?.createdAtUtc ?? "");
-    const bt = String(b?.createdAtUtc ?? "");
-    if (at === bt) {
-      const aid = String(a?.ledgerEventId ?? "");
-      const bid = String(b?.ledgerEventId ?? "");
-      return aid < bid ? -1 : aid > bid ? 1 : 0;
+      // ---- deterministic sort (asc base) ----
+      rows.sort((a, b) => {
+        const at = String(a?.createdAtUtc ?? "");
+        const bt = String(b?.createdAtUtc ?? "");
+        if (at === bt) {
+          const aid = String(a?.ledgerEventId ?? "");
+          const bid = String(b?.ledgerEventId ?? "");
+          return aid < bid ? -1 : aid > bid ? 1 : 0;
+        }
+        return at < bt ? -1 : 1;
+      });
+
+      if (order === "desc") rows.reverse();
+
+      const page = rows.slice(0, limit);
+      const last = page[page.length - 1] || null;
+
+      return json(
+        200,
+        {
+          events: page,
+          page: {
+            limit,
+            order,
+            before: before || null,
+            after: after || null,
+            itemId,
+            returned: page.length,
+            nextBefore: order === "desc" && last ? last.createdAtUtc : null,
+            nextAfter: order === "asc" && last ? last.createdAtUtc : null,
+          },
+        },
+        baseHeaders
+      );
     }
-    return at < bt ? -1 : 1;
-  });
 
-  if (order === "desc") rows.reverse();
-
-  const page = rows.slice(0, limit);
-  const last = page[page.length - 1] || null;
-
-  return json(
-    200,
-    {
-      events: page,
-      page: {
-        limit,
-        order,
-        before: before || null,
-        after: after || null,
-        itemId,
-        returned: page.length,
-        nextBefore: order === "desc" && last ? last.createdAtUtc : null,
-        nextAfter: order === "asc" && last ? last.createdAtUtc : null,
-      },
-    },
-    baseHeaders
-  );
-}
-    
     if (method === "POST") {
       if (ctx?.session?.authLevel !== "dev") {
         emitAudit(
