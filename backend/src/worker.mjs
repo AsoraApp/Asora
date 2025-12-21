@@ -3,7 +3,7 @@
 
 import { getOrCreateRequestId } from "./observability/requestId.mjs";
 import { createRequestContext } from "./domain/requestContext.mjs";
-import { emitAudit } from "./observability/audit.mjs";
+import { emitAudit } from "./observability/audit.worker.mjs";
 import { nowUtcIso } from "./domain/time/utc.mjs";
 
 import { requireAuth } from "./auth/requireAuth.mjs";
