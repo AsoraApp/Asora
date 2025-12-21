@@ -1,4 +1,5 @@
 // backend/src/worker/handleFetch.mjs
+
 import { getOrCreateRequestIdFromHeaders } from "../observability/requestId.worker.mjs";
 import { resolveSessionFromHeaders } from "../auth/session.worker.mjs";
 import { createRequestContext } from "../domain/requestContext.mjs";
@@ -11,7 +12,9 @@ import { notificationsFetchRouter } from "./notifications.worker.mjs";
 
 import { loadTenantCollection } from "../storage/jsonStore.worker.mjs";
 
-const BUILD_STAMP = "u12-audit-fix-env-plumbing-2025-12-20T00:00Z"; // CHANGE THIS ON EACH DEPLOY
+const BUILD_STAMP = "u13-enterprise-hardening-2025-12-21T12:30Z";
+
+/* ------------------------- helpers ------------------------- */
 
 function json(statusCode, body, headersObj) {
   const h = new Headers(headersObj || {});
@@ -24,7 +27,6 @@ function parsePath(pathname) {
 }
 
 function normalizePath(pathname) {
-  // compatibility shims
   if (pathname === "/auth/me") return "/api/auth/me";
   if (pathname.startsWith("/v1/")) return "/api/" + pathname.slice("/v1/".length);
   return pathname;
@@ -39,15 +41,27 @@ function methodNotAllowed(baseHeaders) {
 }
 
 function notFound(baseHeaders) {
-  return json(404, { error: "NOT_FOUND", code: "ROUTE_NOT_FOUND", details: null }, baseHeaders);
+  return json(
+    404,
+    { error: "NOT_FOUND", code: "ROUTE_NOT_FOUND", details: null },
+    baseHeaders
+  );
 }
 
 function requireAuth(ctx, baseHeaders) {
   if (!ctx || !ctx.session || ctx.session.isAuthenticated !== true) {
-    return json(401, { error: "UNAUTHORIZED", code: "AUTH_REQUIRED", details: null }, baseHeaders);
+    return json(
+      401,
+      { error: "UNAUTHORIZED", code: "AUTH_REQUIRED", details: null },
+      baseHeaders
+    );
   }
   if (!ctx.tenantId) {
-    return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
+    return json(
+      403,
+      { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null },
+      baseHeaders
+    );
   }
   return null;
 }
@@ -63,23 +77,48 @@ async function readJson(request) {
 }
 
 function isAuthedTenantScoped(ctx) {
-  return !!(ctx && ctx.session && ctx.session.isAuthenticated === true && ctx.tenantId);
+  return !!(
+    ctx &&
+    ctx.session &&
+    ctx.session.isAuthenticated === true &&
+    ctx.tenantId
+  );
 }
 
 function safeCreateCtx({ requestId, session }) {
   try {
     const c = createRequestContext({ requestId, session });
-    // Prefer computed tenantId, but fall back to session tenantId if present.
     const tenantId = c?.tenantId || session?.tenantId || null;
     return { ...(c || {}), requestId, session, tenantId };
   } catch {
     return {
       requestId,
-      session: session || { isAuthenticated: false, token: null, tenantId: null, authLevel: null },
+      session: session || {
+        isAuthenticated: false,
+        token: null,
+        tenantId: null,
+        authLevel: null,
+      },
       tenantId: session?.tenantId || null,
     };
   }
 }
+
+/* ------------------------- classification ------------------------- */
+
+function classifyRequest(pathname, method) {
+  if (
+    pathname === "/__build" ||
+    pathname === "/__meta" ||
+    pathname === "/__health"
+  ) {
+    return "infra";
+  }
+  if (method === "GET") return "read";
+  return "write";
+}
+
+/* ------------------------- handler ------------------------- */
 
 export async function handleFetch(request, env, cfctx) {
   const u = new URL(request.url);
@@ -90,23 +129,59 @@ export async function handleFetch(request, env, cfctx) {
   const requestId = getOrCreateRequestIdFromHeaders(request.headers);
   const baseHeaders = { "X-Request-Id": requestId };
 
-  // Public
+  /* -------- infra (public, no auth) -------- */
+
   if (pathname === "/__build") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
-    return json(200, { ok: true, build: BUILD_STAMP, requestId }, baseHeaders);
+    return json(
+      200,
+      { ok: true, build: BUILD_STAMP, requestId },
+      baseHeaders
+    );
   }
+
+  if (pathname === "/__health") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    return json(200, { ok: true }, baseHeaders);
+  }
+
+  if (pathname === "/__meta") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+    return json(
+      200,
+      {
+        service: "asora",
+        build: BUILD_STAMP,
+        runtime: "cloudflare-worker",
+        region: cfctx?.colo || null,
+        env: env?.ENV || "production",
+        requestId,
+      },
+      baseHeaders
+    );
+  }
+
   if (pathname === "/") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
-    return json(200, { ok: true, service: "asora", runtime: "cloudflare-worker", requestId }, baseHeaders);
+    return json(
+      200,
+      {
+        ok: true,
+        service: "asora",
+        runtime: "cloudflare-worker",
+        requestId,
+      },
+      baseHeaders
+    );
   }
 
-  // Session
-  const session = resolveSessionFromHeaders(request.headers, u);
+  /* -------- auth / context -------- */
 
-  // Context
+  const session = resolveSessionFromHeaders(request.headers, u);
   const ctx = safeCreateCtx({ requestId, session });
 
-  // Base audit (never block execution)
+  const classification = classifyRequest(pathname, method);
+
   emitAudit(
     ctx,
     {
@@ -116,61 +191,52 @@ export async function handleFetch(request, env, cfctx) {
       objectId: null,
       decision: "SYSTEM",
       reasonCode: "RECEIVED",
-      factsSnapshot: { method, path: pathname },
+      factsSnapshot: { method, path: pathname, classification },
     },
     env,
     cfctx
   );
 
-  // Auth route
+  /* -------- auth endpoint -------- */
+
   if (pathname === "/api/auth/me") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
 
     const denied = requireAuth(ctx, baseHeaders);
-    if (denied) {
-      emitAudit(
-        ctx,
-        {
-          eventCategory: "SECURITY",
-          eventType: "AUTH_REJECTED",
-          objectType: "auth",
-          objectId: null,
-          decision: "DENY",
-          reasonCode: denied.status === 403 ? "TENANT_REQUIRED" : "AUTH_REQUIRED",
-          factsSnapshot: { method, path: pathname },
-        },
-        env,
-        cfctx
-      );
-      return denied;
-    }
+    if (denied) return denied;
 
     return authMeFetch(ctx, baseHeaders);
   }
 
-  // All /api/* require auth
+  /* -------- all /api require auth -------- */
+
   if (pathname.startsWith("/api/")) {
     const denied = requireAuth(ctx, baseHeaders);
-    if (denied) {
-      emitAudit(
-        ctx,
-        {
-          eventCategory: "SECURITY",
-          eventType: "AUTH_REJECTED",
-          objectType: "auth",
-          objectId: null,
-          decision: "DENY",
-          reasonCode: denied.status === 403 ? "TENANT_REQUIRED" : "AUTH_REQUIRED",
-          factsSnapshot: { method, path: pathname },
-        },
-        env,
-        cfctx
-      );
-      return denied;
-    }
+    if (denied) return denied;
   }
 
-  // Inventory read endpoints
+  /* -------- audit read (U13) -------- */
+
+  if (pathname === "/api/audit/events") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+
+    const events =
+      (await loadTenantCollection(env, ctx.tenantId, "audit_events", [])) ||
+      [];
+
+    const rows = Array.isArray(events) ? events.slice() : [];
+
+    rows.sort((a, b) => {
+      const at = String(a?.createdAtUtc ?? "");
+      const bt = String(b?.createdAtUtc ?? "");
+      return at < bt ? 1 : at > bt ? -1 : 0;
+    });
+
+    return json(200, { events: rows }, baseHeaders);
+  }
+
+  /* -------- inventory reads -------- */
+
   if (pathname === "/api/inventory/items") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
     const items = await loadTenantCollection(env, ctx.tenantId, "items.json", []);
@@ -179,8 +245,17 @@ export async function handleFetch(request, env, cfctx) {
 
   if (pathname === "/api/inventory/categories") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
-    const categories = await loadTenantCollection(env, ctx.tenantId, "categories.json", []);
-    return json(200, { categories: Array.isArray(categories) ? categories : [] }, baseHeaders);
+    const categories = await loadTenantCollection(
+      env,
+      ctx.tenantId,
+      "categories.json",
+      []
+    );
+    return json(
+      200,
+      { categories: Array.isArray(categories) ? categories : [] },
+      baseHeaders
+    );
   }
 
   if (pathname === "/api/inventory/hubs") {
@@ -197,186 +272,100 @@ export async function handleFetch(request, env, cfctx) {
 
   if (pathname === "/api/inventory/vendors") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
-    const vendors = await loadTenantCollection(env, ctx.tenantId, "vendors.json", []);
-    return json(200, { vendors: Array.isArray(vendors) ? vendors : [] }, baseHeaders);
+    const vendors = await loadTenantCollection(
+      env,
+      ctx.tenantId,
+      "vendors.json",
+      []
+    );
+    return json(
+      200,
+      { vendors: Array.isArray(vendors) ? vendors : [] },
+      baseHeaders
+    );
   }
 
-  // Ledger events
+  /* -------- ledger -------- */
+
   if (pathname === "/api/ledger/events") {
     if (method === "GET") {
-  const sp = u.searchParams;
+      const sp = u.searchParams;
+      const limit = Number(sp.get("limit") || 500);
 
-  // ---- limit ----
-  const rawLimit = sp.get("limit");
-  const limit = rawLimit === null ? 500 : Number(rawLimit);
-  if (!Number.isInteger(limit) || limit <= 0 || limit > 2000) {
-    return json(400, { error: "BAD_REQUEST", code: "INVALID_LIMIT", details: { limit: rawLimit } }, baseHeaders);
-  }
+      if (!Number.isInteger(limit) || limit <= 0 || limit > 2000) {
+        return json(
+          400,
+          { error: "BAD_REQUEST", code: "INVALID_LIMIT", details: null },
+          baseHeaders
+        );
+      }
 
-  // ---- order ----
-  const order = (sp.get("order") || "desc").toLowerCase();
-  if (order !== "asc" && order !== "desc") {
-    return json(400, { error: "BAD_REQUEST", code: "INVALID_ORDER", details: { order } }, baseHeaders);
-  }
+      const all =
+        (await loadTenantCollection(
+          env,
+          ctx.tenantId,
+          "ledger_events",
+          []
+        )) || [];
 
-  // ---- time bounds ----
-  const before = sp.get("before");
-  const after = sp.get("after");
-  if (before && after) {
-    return json(400, { error: "BAD_REQUEST", code: "BEFORE_AND_AFTER", details: null }, baseHeaders);
-  }
+      const rows = Array.isArray(all) ? all.slice() : [];
 
-  const beforeTs = before ? Date.parse(before) : null;
-  const afterTs = after ? Date.parse(after) : null;
-  if ((before && !Number.isFinite(beforeTs)) || (after && !Number.isFinite(afterTs))) {
-    return json(400, { error: "BAD_REQUEST", code: "INVALID_TIMESTAMP", details: { before, after } }, baseHeaders);
-  }
+      rows.sort((a, b) => {
+        const at = String(a?.createdAtUtc ?? "");
+        const bt = String(b?.createdAtUtc ?? "");
+        return at < bt ? 1 : at > bt ? -1 : 0;
+      });
 
-  // ---- item filter ----
-  const itemId = sp.get("itemId");
-
-  // ---- load ----
-  const all = (await loadTenantCollection(env, ctx.tenantId, "ledger_events", [])) || [];
-  let rows = Array.isArray(all) ? all.slice() : [];
-
-  if (itemId) {
-    rows = rows.filter((e) => e?.itemId === itemId);
-  }
-  if (beforeTs !== null) {
-    rows = rows.filter((e) => Date.parse(e?.createdAtUtc) < beforeTs);
-  }
-  if (afterTs !== null) {
-    rows = rows.filter((e) => Date.parse(e?.createdAtUtc) > afterTs);
-  }
-
-  // ---- deterministic sort (asc base) ----
-  rows.sort((a, b) => {
-    const at = String(a?.createdAtUtc ?? "");
-    const bt = String(b?.createdAtUtc ?? "");
-    if (at === bt) {
-      const aid = String(a?.ledgerEventId ?? "");
-      const bid = String(b?.ledgerEventId ?? "");
-      return aid < bid ? -1 : aid > bid ? 1 : 0;
+      return json(
+        200,
+        { events: rows.slice(0, limit) },
+        baseHeaders
+      );
     }
-    return at < bt ? -1 : 1;
-  });
 
-  if (order === "desc") rows.reverse();
-
-  const page = rows.slice(0, limit);
-  const last = page[page.length - 1] || null;
-
-  return json(
-    200,
-    {
-      events: page,
-      page: {
-        limit,
-        order,
-        before: before || null,
-        after: after || null,
-        itemId,
-        returned: page.length,
-        nextBefore: order === "desc" && last ? last.createdAtUtc : null,
-        nextAfter: order === "asc" && last ? last.createdAtUtc : null,
-      },
-    },
-    baseHeaders
-  );
-}
-    
     if (method === "POST") {
       if (ctx?.session?.authLevel !== "dev") {
-        emitAudit(
-          ctx,
-          {
-            eventCategory: "SECURITY",
-            eventType: "AUTHZ_DENIED",
-            objectType: "ledger_write",
-            objectId: "/api/ledger/events",
-            decision: "DENY",
-            reasonCode: "AUTHZ_DENIED",
-            factsSnapshot: { authLevel: ctx?.session?.authLevel ?? null },
-          },
-          env,
-          cfctx
+        return json(
+          403,
+          { error: "FORBIDDEN", code: "AUTHZ_DENIED", details: null },
+          baseHeaders
         );
-        return json(403, { error: "FORBIDDEN", code: "AUTHZ_DENIED", details: null }, baseHeaders);
       }
 
       const body = await readJson(request);
       if (body === "__INVALID_JSON__") {
-        emitAudit(
-          ctx,
-          {
-            eventCategory: "SECURITY",
-            eventType: "VALIDATION_FAILED",
-            objectType: "request",
-            objectId: "/api/ledger/events",
-            decision: "DENY",
-            reasonCode: "INVALID_JSON",
-            factsSnapshot: { method, path: pathname },
-          },
-          env,
-          cfctx
+        return json(
+          400,
+          { error: "BAD_REQUEST", code: "INVALID_JSON", details: null },
+          baseHeaders
         );
-        return json(400, { error: "BAD_REQUEST", code: "INVALID_JSON", details: null }, baseHeaders);
       }
 
       return writeLedgerEventFromJson(ctx, body, baseHeaders, cfctx, env);
     }
 
-    if (isAuthedTenantScoped(ctx)) {
-      emitAudit(
-        ctx,
-        {
-          eventCategory: "SECURITY",
-          eventType: "ROUTE_METHOD_NOT_ALLOWED",
-          objectType: "http_route",
-          objectId: "/api/ledger/events",
-          decision: "DENY",
-          reasonCode: "METHOD_NOT_ALLOWED",
-          factsSnapshot: { method, path: pathname },
-        },
-        env,
-        cfctx
-      );
-    }
     return methodNotAllowed(baseHeaders);
   }
 
-  // Alerts / notifications routers
+  /* -------- routers -------- */
+
   {
-    // IMPORTANT: pass env + cfctx through (storage + audit require it)
     const r = await alertsFetchRouter(ctx, request, baseHeaders, cfctx, env);
     if (r) return r;
   }
+
   {
-    // IMPORTANT: notifications router must also accept env + cfctx
-    const r = await notificationsFetchRouter(ctx, request, baseHeaders, cfctx, env);
+    const r = await notificationsFetchRouter(
+      ctx,
+      request,
+      baseHeaders,
+      cfctx,
+      env
+    );
     if (r) return r;
   }
 
-  // Fallthrough
-  if (pathname.startsWith("/api/")) {
-    if (isAuthedTenantScoped(ctx)) {
-      emitAudit(
-        ctx,
-        {
-          eventCategory: "SECURITY",
-          eventType: "ROUTE_NOT_FOUND",
-          objectType: "http_route",
-          objectId: pathname,
-          decision: "DENY",
-          reasonCode: "ROUTE_NOT_FOUND",
-          factsSnapshot: { method, path: pathname },
-        },
-        env,
-        cfctx
-      );
-    }
-    return notFound(baseHeaders);
-  }
+  /* -------- fallthrough -------- */
 
   return notFound(baseHeaders);
 }
