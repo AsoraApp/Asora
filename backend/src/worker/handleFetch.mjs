@@ -5,6 +5,7 @@ import { createRequestContext } from "../domain/requestContext.mjs";
 import { emitAudit } from "../observability/audit.worker.mjs";
 
 import { authMeFetch } from "./auth.worker.mjs";
+import { authDevExchangeFetch } from "./auth.exchange.worker.mjs";
 import { writeLedgerEventFromJson } from "./ledger.write.worker.mjs";
 import { alertsFetchRouter } from "./alerts.worker.mjs";
 import { notificationsFetchRouter } from "./notifications.worker.mjs";
@@ -214,6 +215,12 @@ async function route(request, env, cfctx) {
     env,
     cfctx
   );
+
+  // --- U14: dev_token -> Bearer exchange (must run even when no session exists) ---
+  if (pathname === "/api/auth/dev/exchange") {
+    if (method !== "POST") return methodNotAllowed(baseHeaders);
+    return authDevExchangeFetch(ctx, request, baseHeaders, cfctx, env);
+  }
 
   // --- Auth route ---
   if (pathname === "/api/auth/me") {
