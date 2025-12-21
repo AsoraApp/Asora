@@ -80,6 +80,24 @@ export function clearStoredAuth() {
 }
 
 /**
+ * Normalize UI paths to enterprise-safe API routing.
+ *
+ * Rule:
+ * - UI code may call "/v1/*" (legacy).
+ * - We rewrite it to "/api/v1/*" so Pages Functions can proxy same-origin.
+ * - If caller already uses "/api/*", we keep it.
+ */
+function normalizePath(path) {
+  const p = String(path || "");
+  if (!p.startsWith("/")) return `/${p}`;
+  if (p.startsWith("/api/")) return p;
+  if (p === "/api") return "/api";
+  if (p.startsWith("/v1/")) return `/api${p}`; // "/v1/..." -> "/api/v1/..."
+  if (p === "/v1") return "/api/v1";
+  return p;
+}
+
+/**
  * Build an absolute URL against configured base URL.
  *
  * AUTH RULES (U14 authoritative):
@@ -89,7 +107,8 @@ export function clearStoredAuth() {
  */
 export function buildUrl(path, params) {
   const base = getBaseUrl();
-  const u = new URL(path, base);
+  const normalizedPath = normalizePath(path);
+  const u = new URL(normalizedPath, base);
 
   // Shallow copy so we can safely inject params without mutating caller object
   const merged = params && typeof params === "object" ? { ...params } : {};
@@ -138,7 +157,6 @@ export async function asoraGetJson(path, params) {
   const res = await fetch(url, {
     method: "GET",
     headers: buildAuthHeaders(),
-    // Prevent Next from caching so responses reflect live state deterministically.
     cache: "no-store",
   });
 
@@ -159,8 +177,7 @@ export async function asoraGetJson(path, params) {
 }
 
 /**
- * Minimal POST JSON helper for browser-only flows (U14 exchange, ledger writes, etc.).
- * Keeps deterministic error envelope symmetry with asoraGetJson.
+ * Minimal POST JSON helper for browser-only flows (U14 exchange, etc.).
  */
 export async function asoraPostJson(path, body, params) {
   const url = buildUrl(path, params);
