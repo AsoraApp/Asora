@@ -1,6 +1,11 @@
 // backend/src/auth/devTokenCompat.worker.mjs
 // U10: Transitional compatibility bridge for legacy dev_token.
 // Explicitly deprecated. No new features may depend on it.
+//
+// U13: Keep deterministic + conservative parsing.
+// - No randomness
+// - Fail-closed on ambiguity
+// - Stable session shape for sanitizeSession()
 
 export function parseDevTokenTenantId(devTokenRaw) {
   const t = String(devTokenRaw || "").trim();
