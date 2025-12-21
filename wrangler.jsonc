@@ -20,5 +20,10 @@
       "binding": "ASORA_KV",
       "id": "b43ccd4f49df403987410da83dbe557c"
     }
-  ]
+  ],
+
+  // U13: explicit runtime environment label (reported by /__meta.env)
+  "vars": {
+    "ENV": "production"
+  }
 }
