@@ -12,7 +12,7 @@ import { notificationsFetchRouter } from "./notifications.worker.mjs";
 
 import { loadTenantCollection } from "../storage/jsonStore.worker.mjs";
 
-const BUILD_STAMP = "u13-ledger-post-enable-2025-12-21T15:15Z"; // CHANGE THIS ON EACH DEPLOY
+const BUILD_STAMP = "u14-bearer-exchange-2025-12-21T16:55Z"; // CHANGE THIS ON EACH DEPLOY
 
 function json(statusCode, body, headersObj) {
   const h = new Headers(headersObj || {});
@@ -61,10 +61,6 @@ async function readJson(request) {
   } catch {
     return "__INVALID_JSON__";
   }
-}
-
-function isAuthedTenantScoped(ctx) {
-  return !!(ctx && ctx.session && ctx.session.isAuthenticated === true && ctx.tenantId);
 }
 
 function safeCreateCtx({ requestId, session }) {
