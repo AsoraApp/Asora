@@ -82,9 +82,9 @@ export function clearStoredAuth() {
 /**
  * Normalize UI paths to enterprise-safe API routing.
  *
- * Rule:
- * - UI code may call "/v1/*" (legacy).
- * - We rewrite it to "/api/v1/*" so Pages Functions can proxy same-origin.
+ * Enterprise rule:
+ * - UI may call "/v1/*" (legacy).
+ * - We rewrite it to "/api/*" (NOT "/api/v1/*") to match Worker routing.
  * - If caller already uses "/api/*", we keep it.
  */
 function normalizePath(path) {
@@ -92,8 +92,11 @@ function normalizePath(path) {
   if (!p.startsWith("/")) return `/${p}`;
   if (p.startsWith("/api/")) return p;
   if (p === "/api") return "/api";
-  if (p.startsWith("/v1/")) return `/api${p}`; // "/v1/..." -> "/api/v1/..."
-  if (p === "/v1") return "/api/v1";
+
+  // Legacy "/v1/*" -> "/api/*" (matches Worker normalizePath shim)
+  if (p.startsWith("/v1/")) return `/api/${p.slice("/v1/".length)}`; // "/v1/ledger/events" -> "/api/ledger/events"
+  if (p === "/v1") return "/api";
+
   return p;
 }
 
