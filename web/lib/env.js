@@ -8,7 +8,7 @@ function trimSlash(s) {
  * Base API origin for the UI.
  *
  * Enterprise default (U14):
- * - Prefer SAME-ORIGIN requests via Pages Functions proxy ("/api/*").
+ * - Prefer SAME-ORIGIN requests (Pages) to avoid CORS and keep a stable contract.
  * - Only use a cross-origin Worker base if explicitly configured.
  *
  * Priority:
