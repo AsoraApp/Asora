@@ -5,19 +5,69 @@ import { createRequestContext } from "../domain/requestContext.mjs";
 import { emitAudit } from "../observability/audit.worker.mjs";
 
 import { authMeFetch } from "./auth.worker.mjs";
-import { authDevExchangeFetch } from "./auth.exchange.worker.mjs";
 import { writeLedgerEventFromJson } from "./ledger.write.worker.mjs";
 import { alertsFetchRouter } from "./alerts.worker.mjs";
 import { notificationsFetchRouter } from "./notifications.worker.mjs";
 
 import { loadTenantCollection } from "../storage/jsonStore.worker.mjs";
 
-const BUILD_STAMP = "u14-bearer-exchange-2025-12-21T16:55Z"; // CHANGE THIS ON EACH DEPLOY
+const BUILD_STAMP = "u13-cors-ui-baseurl-fix-2025-12-21T16:58Z"; // CHANGE THIS ON EACH DEPLOY
+
+// ---- CORS (UI -> Worker API) ----
+// Keep conservative; only allow known UI origins.
+const CORS_ALLOW_ORIGINS = new Set([
+  "https://asora.pages.dev",
+  "http://localhost:3000",
+]);
+
+function getAllowedOrigin(request) {
+  const origin = request?.headers?.get?.("Origin") || request?.headers?.get?.("origin") || "";
+  if (!origin) return null;
+  if (CORS_ALLOW_ORIGINS.has(origin)) return origin;
+  return null;
+}
+
+function withCors(request, response) {
+  try {
+    const origin = getAllowedOrigin(request);
+    if (!origin) return response;
+
+    const h = new Headers(response.headers);
+    h.set("Access-Control-Allow-Origin", origin);
+    h.set("Vary", "Origin");
+    h.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    h.set("Access-Control-Allow-Headers", "Authorization,Content-Type");
+    // If you ever use cookies/credentials, you must set this AND cannot use "*"
+    // h.set("Access-Control-Allow-Credentials", "true");
+
+    return new Response(response.body, { status: response.status, headers: h });
+  } catch {
+    return response;
+  }
+}
+
+function corsPreflightResponse(request, baseHeaders) {
+  const origin = getAllowedOrigin(request);
+  if (!origin) {
+    // Fail-closed: if we don't recognize origin, don't add ACAO.
+    return json(204, null, baseHeaders);
+  }
+  const h = new Headers(baseHeaders || {});
+  h.set("Access-Control-Allow-Origin", origin);
+  h.set("Vary", "Origin");
+  h.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  h.set("Access-Control-Allow-Headers", "Authorization,Content-Type");
+  return new Response(null, { status: 204, headers: h });
+}
 
 function json(statusCode, body, headersObj) {
   const h = new Headers(headersObj || {});
-  h.set("Content-Type", "application/json; charset=utf-8");
-  return new Response(JSON.stringify(body), { status: statusCode, headers: h });
+  // If body is null for 204/etc, don't force JSON.
+  if (body !== null && body !== undefined) {
+    h.set("Content-Type", "application/json; charset=utf-8");
+    return new Response(JSON.stringify(body), { status: statusCode, headers: h });
+  }
+  return new Response(null, { status: statusCode, headers: h });
 }
 
 function parsePath(pathname) {
@@ -90,7 +140,12 @@ function safeCreateCtx({ requestId, session }) {
  * - "write": non-GET under /api/*
  */
 function classifyRequest(pathname, method) {
-  if (pathname === "/" || pathname === "/__build" || pathname === "/__meta" || pathname === "/__health") {
+  if (
+    pathname === "/" ||
+    pathname === "/__build" ||
+    pathname === "/__meta" ||
+    pathname === "/__health"
+  ) {
     return "infra";
   }
   if (pathname.startsWith("/api/")) {
@@ -102,7 +157,6 @@ function classifyRequest(pathname, method) {
 function mapExceptionToHttp(err) {
   const code = err?.code || err?.message || null;
 
-  // U13: deterministic mapping for environment/binding issues
   if (code === "KV_NOT_BOUND") {
     return {
       status: 503,
@@ -127,7 +181,6 @@ function mapExceptionToHttp(err) {
     };
   }
 
-  // Default: do not leak internals
   return {
     status: 500,
     body: { error: "INTERNAL_ERROR", code: "UNHANDLED_EXCEPTION", details: null },
@@ -143,6 +196,15 @@ async function route(request, env, cfctx) {
 
   const requestId = getOrCreateRequestIdFromHeaders(request.headers);
   const baseHeaders = { "X-Request-Id": requestId };
+
+  // ---- CORS preflight ----
+  if (method === "OPTIONS") {
+    // Only respond to OPTIONS for the API/infra surface.
+    if (pathname.startsWith("/api/") || pathname.startsWith("/__") || pathname === "/") {
+      return corsPreflightResponse(request, baseHeaders);
+    }
+    return notFound(baseHeaders);
+  }
 
   // --- Public infra (no auth) ---
   if (pathname === "/__build") {
@@ -211,12 +273,6 @@ async function route(request, env, cfctx) {
     env,
     cfctx
   );
-
-  // --- U14: dev_token -> Bearer exchange (must run even when no session exists) ---
-  if (pathname === "/api/auth/dev/exchange") {
-    if (method !== "POST") return methodNotAllowed(baseHeaders);
-    return authDevExchangeFetch(ctx, request, baseHeaders, cfctx, env);
-  }
 
   // --- Auth route ---
   if (pathname === "/api/auth/me") {
@@ -326,7 +382,7 @@ async function route(request, env, cfctx) {
     return json(200, { vendors: Array.isArray(vendors) ? vendors : [] }, baseHeaders);
   }
 
-  // --- Ledger events (unchanged behavior) ---
+  // --- Ledger events ---
   if (pathname === "/api/ledger/events") {
     if (method === "GET") {
       const sp = u.searchParams;
@@ -452,20 +508,18 @@ async function route(request, env, cfctx) {
     if (r) return r;
   }
 
-  // Fallthrough
   if (pathname.startsWith("/api/")) return notFound(baseHeaders);
   return notFound(baseHeaders);
 }
 
 export async function handleFetch(request, env, cfctx) {
-  // U13: top-level error boundary (deterministic HTTP errors)
   const requestId = getOrCreateRequestIdFromHeaders(request?.headers || new Headers());
   const baseHeaders = { "X-Request-Id": requestId };
 
   try {
-    return await route(request, env, cfctx);
+    const res = await route(request, env, cfctx);
+    return withCors(request, res);
   } catch (err) {
-    // Best-effort context for audit (do not throw)
     const ctx = safeCreateCtx({
       requestId,
       session: {
@@ -494,6 +548,6 @@ export async function handleFetch(request, env, cfctx) {
       cfctx
     );
 
-    return json(mapped.status, mapped.body, baseHeaders);
+    return withCors(request, json(mapped.status, mapped.body, baseHeaders));
   }
 }
