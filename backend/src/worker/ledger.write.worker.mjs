@@ -9,7 +9,6 @@ const KNOWN_AUTH_LEVELS = new Set(["user", "service", "system", "dev"]);
 const LEDGER_WRITE_ALLOWED = new Set(["service", "system", "dev"]);
 
 // Deterministic route/method facts for this execution path (no inference).
-// NOTE: router normalizes /v1/* to /api/*, so writes land here.
 const LEDGER_WRITE_ROUTE = "/api/ledger/events";
 const LEDGER_WRITE_METHOD = "POST";
 
@@ -38,23 +37,36 @@ function fnv1a32Hex(input) {
   return h.toString(16).padStart(8, "0");
 }
 
-function stableLedgerEventId(ctx, event) {
-  // Ledger event IDs must be replay-safe and deterministic.
-  // Using tenantId + requestId + a stable projection of the event payload.
+function clampString(v, maxLen) {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  if (!s) return null;
+  if (s.length > maxLen) return s.slice(0, maxLen);
+  return s;
+}
+
+function stableLedgerEventId(ctx, eventCore) {
+  // U13: Prefer reference-based stability for replay safety.
+  // If referenceType+referenceId are provided, they become the stable idempotency basis.
+  // Otherwise, fall back to requestId for uniqueness (best possible without adding new required fields).
   const tenantId = ctx?.tenantId ?? "";
   const requestId = ctx?.requestId ?? "";
 
+  const refType = String(eventCore?.referenceType ?? "");
+  const refId = String(eventCore?.referenceId ?? "");
+  const hasStableRef = !!(refType && refId);
+
   const fp = [
     tenantId,
-    requestId,
-    String(event?.itemId ?? ""),
-    String(event?.hubId ?? ""),
-    String(event?.binId ?? ""),
-    String(event?.qtyDelta ?? ""),
-    String(event?.reasonCode ?? ""),
-    String(event?.referenceType ?? ""),
-    String(event?.referenceId ?? ""),
-    String(event?.note ?? ""),
+    hasStableRef ? "REF" : "REQ",
+    hasStableRef ? `${refType}:${refId}` : requestId,
+    String(eventCore?.itemId ?? ""),
+    String(eventCore?.hubId ?? ""),
+    String(eventCore?.binId ?? ""),
+    String(eventCore?.qtyDelta ?? ""),
+    String(eventCore?.reasonCode ?? ""),
+    String(eventCore?.note ?? ""),
   ].join("|");
 
   return `le_${fnv1a32Hex(fp)}`;
@@ -84,12 +96,11 @@ function emitAuthzDeniedAudit(ctx, code, details, env, cfctx) {
       cfctx
     );
   } catch {
-    // swallow (observability must never break execution)
+    // swallow
   }
 }
 
 function enforceLedgerWriteAuthorizationOrReturn(ctx, baseHeaders, env, cfctx) {
-  // Must be authenticated, tenant must already be session-derived.
   const authLevel = ctx?.session?.authLevel ?? null;
 
   if (!authLevel || !KNOWN_AUTH_LEVELS.has(authLevel)) {
@@ -112,12 +123,34 @@ function enforceLedgerWriteAuthorizationOrReturn(ctx, baseHeaders, env, cfctx) {
   return null;
 }
 
+async function safeLoad(env, tenantId, name, defaultValue) {
+  try {
+    return await loadTenantCollection(env, tenantId, name, defaultValue);
+  } catch (e) {
+    const code = e?.code || e?.message || "STORAGE_ERROR";
+    if (code === "KV_NOT_BOUND") return { __err: { status: 503, error: "SERVICE_UNAVAILABLE", code: "KV_NOT_BOUND" } };
+    if (code === "TENANT_NOT_RESOLVED")
+      return { __err: { status: 403, error: "FORBIDDEN", code: "TENANT_REQUIRED" } };
+    return { __err: { status: 500, error: "INTERNAL_ERROR", code: "STORAGE_ERROR" } };
+  }
+}
+
+async function safeSave(env, tenantId, name, value) {
+  try {
+    await saveTenantCollection(env, tenantId, name, value);
+    return { ok: true };
+  } catch (e) {
+    const code = e?.code || e?.message || "STORAGE_ERROR";
+    if (code === "KV_NOT_BOUND") return { ok: false, status: 503, error: "SERVICE_UNAVAILABLE", code: "KV_NOT_BOUND" };
+    if (code === "TENANT_NOT_RESOLVED") return { ok: false, status: 403, error: "FORBIDDEN", code: "TENANT_REQUIRED" };
+    return { ok: false, status: 500, error: "INTERNAL_ERROR", code: "STORAGE_ERROR" };
+  }
+}
+
 export async function writeLedgerEventFromJson(ctx, input, baseHeaders, cfctx, env) {
-  // U11: explicit authorization boundary for ledger writes (fail-closed)
   const denial = enforceLedgerWriteAuthorizationOrReturn(ctx, baseHeaders, env, cfctx);
   if (denial) return denial;
 
-  // Tenant guard (fail-closed)
   if (!ctx?.tenantId) {
     return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
   }
@@ -151,10 +184,10 @@ export async function writeLedgerEventFromJson(ctx, input, baseHeaders, cfctx, e
   if (typeof input.qtyDelta !== "number" || !Number.isFinite(input.qtyDelta)) {
     return json(400, { error: "BAD_REQUEST", code: "INVALID_QTY_DELTA", details: null }, baseHeaders);
   }
-  if (input.hubId !== undefined && typeof input.hubId !== "string") {
+  if (input.hubId !== undefined && input.hubId !== null && typeof input.hubId !== "string") {
     return json(400, { error: "BAD_REQUEST", code: "INVALID_HUB_ID", details: null }, baseHeaders);
   }
-  if (input.binId !== undefined && typeof input.binId !== "string") {
+  if (input.binId !== undefined && input.binId !== null && typeof input.binId !== "string") {
     return json(400, { error: "BAD_REQUEST", code: "INVALID_BIN_ID", details: null }, baseHeaders);
   }
 
@@ -167,10 +200,10 @@ export async function writeLedgerEventFromJson(ctx, input, baseHeaders, cfctx, e
     hubId: typeof input.hubId === "string" ? input.hubId : null,
     binId: typeof input.binId === "string" ? input.binId : null,
     qtyDelta: input.qtyDelta,
-    reasonCode: typeof input.reasonCode === "string" ? input.reasonCode : "UNSPECIFIED",
-    referenceType: typeof input.referenceType === "string" ? input.referenceType : null,
-    referenceId: typeof input.referenceId === "string" ? input.referenceId : null,
-    note: typeof input.note === "string" ? input.note : null,
+    reasonCode: clampString(input.reasonCode, 64) || "UNSPECIFIED",
+    referenceType: clampString(input.referenceType, 64),
+    referenceId: clampString(input.referenceId, 128),
+    note: clampString(input.note, 512),
   };
 
   const ledgerEventId = stableLedgerEventId(ctx, eventCore);
@@ -180,12 +213,57 @@ export async function writeLedgerEventFromJson(ctx, input, baseHeaders, cfctx, e
     ...eventCore,
   };
 
-  // Append-only persistence
-  const events = (await loadTenantCollection(env, ctx.tenantId, "ledger_events", [])) || [];
+  // Append-only persistence (tenant-scoped)
+  const loaded = await safeLoad(env, ctx.tenantId, "ledger_events", []);
+  if (loaded && loaded.__err) {
+    try {
+      emitAudit(
+        ctx,
+        {
+          eventCategory: "SYSTEM",
+          eventType: "STORAGE_ERROR",
+          objectType: "ledger_event",
+          objectId: ledgerEventId,
+          decision: "DENY",
+          reasonCode: loaded.__err.code,
+          factsSnapshot: { route: LEDGER_WRITE_ROUTE, method: LEDGER_WRITE_METHOD },
+        },
+        env,
+        cfctx
+      );
+    } catch {
+      // swallow
+    }
+    return json(loaded.__err.status, { error: loaded.__err.error, code: loaded.__err.code, details: null }, baseHeaders);
+  }
+
+  const events = loaded || [];
   const rows = Array.isArray(events) ? events : [];
 
   rows.push(event);
-  await saveTenantCollection(env, ctx.tenantId, "ledger_events", rows);
+
+  const saved = await safeSave(env, ctx.tenantId, "ledger_events", rows);
+  if (!saved.ok) {
+    try {
+      emitAudit(
+        ctx,
+        {
+          eventCategory: "SYSTEM",
+          eventType: "STORAGE_ERROR",
+          objectType: "ledger_event",
+          objectId: ledgerEventId,
+          decision: "DENY",
+          reasonCode: saved.code,
+          factsSnapshot: { route: LEDGER_WRITE_ROUTE, method: LEDGER_WRITE_METHOD },
+        },
+        env,
+        cfctx
+      );
+    } catch {
+      // swallow
+    }
+    return json(saved.status, { error: saved.error, code: saved.code, details: null }, baseHeaders);
+  }
 
   // Audit: append succeeded
   try {
@@ -203,6 +281,8 @@ export async function writeLedgerEventFromJson(ctx, input, baseHeaders, cfctx, e
           qtyDelta: event.qtyDelta,
           hubId: event.hubId,
           binId: event.binId,
+          referenceType: event.referenceType,
+          referenceId: event.referenceId,
         },
       },
       env,
