@@ -7,10 +7,15 @@ function trimSlash(s) {
 /**
  * Base API origin for the UI.
  *
+ * Enterprise default (U14):
+ * - Prefer SAME-ORIGIN requests via Pages Functions proxy ("/api/*").
+ * - Only use a cross-origin Worker base if explicitly configured.
+ *
  * Priority:
- *  1) NEXT_PUBLIC_ASORA_API_BASE (set in Cloudflare Pages env vars)
+ *  1) NEXT_PUBLIC_ASORA_API_BASE (optional override)
  *  2) window.__ASORA_API_BASE (optional escape hatch)
- *  3) default hard-coded Worker dev host
+ *  3) window.location.origin (same-origin default)
+ *  4) fallback hard-coded Worker dev host (last resort)
  */
 export function getBaseUrl() {
   // 1) Build-time env (Next public env)
@@ -23,6 +28,11 @@ export function getBaseUrl() {
     return trimSlash(window.__ASORA_API_BASE);
   }
 
-  // 3) Default (your current Worker dev URL)
+  // 3) Same-origin default (best long-term: no CORS, stable contract)
+  if (typeof window !== "undefined" && window?.location?.origin) {
+    return trimSlash(window.location.origin);
+  }
+
+  // 4) Fallback (should not be used for Pages runtime)
   return "https://asora-ui.dblair1027.workers.dev";
 }
