@@ -1,24 +1,30 @@
 // wrangler.jsonc
 {
   // IMPORTANT:
-  // Set this to the EXACT Worker name shown in Cloudflare Dashboard → Workers.
-  // If this name does not match, deploy will fail or create a different Worker.
+  // Must match the EXACT Worker name in Cloudflare Dashboard → Workers.
   "name": "asora",
 
-  // Keep this current and deterministic.
+  // Deterministic runtime target.
   "compatibility_date": "2025-12-21",
 
-  // REQUIRED: entrypoint to your Worker script.
-  "main": "backend/src/index.worker.mjs",
+  // REQUIRED:
+  // Entry point to your Worker script (per Step 1 confirmed live entry).
+  "main": "backend/src/worker/handleFetch.mjs",
 
-  // Optional but recommended if you use module syntax elsewhere.
+  // Keep only what you actually need.
   "compatibility_flags": ["nodejs_compat"],
 
-  // Bindings (do not invent these—match your dashboard bindings)
+  // Bindings (must match Cloudflare Dashboard)
   "kv_namespaces": [
     {
       "binding": "ASORA_KV",
       "id": "b43ccd4f49df403987410da83dbe557c"
     }
-  ]
+  ],
+
+  // U13: environment clarity (exposed via /__meta.env)
+  // This does NOT create multiple environments; it is a single explicit label.
+  "vars": {
+    "ENV": "production"
+  }
 }
