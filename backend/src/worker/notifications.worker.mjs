@@ -28,6 +28,21 @@ function sortByCreatedAtDescThenId(arr) {
     });
 }
 
+async function safeLoad(env, tenantId, name, defaultValue) {
+  try {
+    return await loadTenantCollection(env, tenantId, name, defaultValue);
+  } catch (e) {
+    const code = e?.code || e?.message || "STORAGE_ERROR";
+    if (code === "KV_NOT_BOUND") {
+      return { __err: { status: 503, error: "SERVICE_UNAVAILABLE", code: "KV_NOT_BOUND" } };
+    }
+    if (code === "TENANT_NOT_RESOLVED") {
+      return { __err: { status: 403, error: "FORBIDDEN", code: "TENANT_REQUIRED" } };
+    }
+    return { __err: { status: 500, error: "INTERNAL_ERROR", code: "STORAGE_ERROR" } };
+  }
+}
+
 /**
  * GET /api/notifications
  * Worker router. env + cfctx required for storage + audit.
@@ -47,14 +62,34 @@ export async function notificationsFetchRouter(ctx, request, baseHeaders, cfctx,
     return json(403, { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, baseHeaders);
   }
 
-  const notifications = (await loadTenantCollection(env, ctx.tenantId, "notifications", [])) || [];
+  const loaded = await safeLoad(env, ctx.tenantId, "notifications", []);
+  if (loaded && loaded.__err) {
+    emitAudit(
+      ctx,
+      {
+        eventCategory: "SYSTEM",
+        eventType: "STORAGE_ERROR",
+        objectType: "notification",
+        objectId: null,
+        decision: "DENY",
+        reasonCode: loaded.__err.code,
+        factsSnapshot: { route: "/api/notifications" },
+      },
+      env,
+      cfctx
+    );
+
+    return json(loaded.__err.status, { error: loaded.__err.error, code: loaded.__err.code, details: null }, baseHeaders);
+  }
+
+  const notifications = loaded || [];
   const arr = Array.isArray(notifications) ? notifications : [];
   const out = sortByCreatedAtDescThenId(arr);
 
   emitAudit(
     ctx,
     {
-      eventCategory: "ALERT",
+      eventCategory: "NOTIFICATION",
       eventType: "NOTIFICATIONS_LIST",
       objectType: "notification",
       objectId: null,
