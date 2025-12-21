@@ -1,120 +1,122 @@
 // web/app/api/[...path]/route.js
-//
-// Next.js App Router API proxy for Asora.
-// This is the correct approach when using @cloudflare/next-on-pages.
-//
-// Routes handled:
-//   /api/__build
-//   /api/__health
-//   /api/__meta
-//   /api/v1/*
-//   /api/* (fallback)
-//
-// Upstream:
-//   process.env.ASORA_WORKER_ORIGIN (recommended, server-only)
-// Fallbacks:
-//   process.env.NEXT_PUBLIC_ASORA_API_BASE (if you already set it)
-//   https://asora-ui.dblair1027.workers.dev (last resort)
 export const runtime = "edge";
 
-function getUpstreamOrigin() {
-  const fromServer = process.env.ASORA_WORKER_ORIGIN || "";
-  if (fromServer) return trimSlash(fromServer);
+// Hard target: your backend Worker origin (NOT Pages).
+// Keep this as a single source of truth for the proxy.
+const WORKER_ORIGIN = "https://asora-ui.dblair1027.workers.dev";
 
-  const fromPublic = process.env.NEXT_PUBLIC_ASORA_API_BASE || "";
-  if (fromPublic) return trimSlash(fromPublic);
-
-  return "https://asora-ui.dblair1027.workers.dev";
+function json(status, body, extraHeaders) {
+  const h = new Headers(extraHeaders || {});
+  h.set("content-type", "application/json; charset=utf-8");
+  return new Response(JSON.stringify(body), { status, headers: h });
 }
 
-function trimSlash(s) {
-  return String(s || "").replace(/\/+$/g, "");
+/**
+ * Incoming requests are same-origin:
+ *   https://asora.pages.dev/api/<...>
+ *
+ * We forward them to the backend Worker:
+ *   https://asora-ui.dblair1027.workers.dev/<...>
+ *
+ * IMPORTANT:
+ * - We strip the leading "/api" prefix.
+ * - Query string is preserved.
+ * - Authorization header is forwarded (Bearer support).
+ * - dev_token query param is forwarded (legacy support).
+ */
+function buildUpstreamUrl(req, params) {
+  const url = new URL(req.url);
+
+  const rest = Array.isArray(params?.path) ? params.path.join("/") : String(params?.path || "");
+  // Strip "/api" by construction; this handler is mounted at /api/* already.
+  // So upstream path becomes "/<rest>".
+  const upstream = new URL(`/${rest}`, WORKER_ORIGIN);
+
+  // Preserve query string exactly
+  upstream.search = url.search;
+
+  return upstream;
 }
 
-function normalizeJoin(origin, path) {
-  const o = trimSlash(origin);
-  const p = String(path || "");
-  if (!p.startsWith("/")) return `${o}/${p}`;
-  return `${o}${p}`;
+function filterRequestHeaders(req) {
+  const h = new Headers();
+
+  // Forward auth if present
+  const auth = req.headers.get("authorization");
+  if (auth) h.set("authorization", auth);
+
+  // Forward content type for POST
+  const ct = req.headers.get("content-type");
+  if (ct) h.set("content-type", ct);
+
+  // Optional: request id passthrough if you use it
+  const rid = req.headers.get("x-request-id");
+  if (rid) h.set("x-request-id", rid);
+
+  return h;
 }
 
-async function proxy(request, { params }) {
-  const upstreamOrigin = getUpstreamOrigin();
+function filterResponseHeaders(upstreamHeaders) {
+  const h = new Headers();
 
-  // Next gives params.path as array of segments (catch-all)
-  const segments = Array.isArray(params?.path) ? params.path : [];
-  const forwardPath = "/" + segments.map((s) => encodeURIComponent(String(s))).join("/");
+  // Pass through content-type + cache signaling
+  const ct = upstreamHeaders.get("content-type");
+  if (ct) h.set("content-type", ct);
 
-  const inUrl = new URL(request.url);
+  const cc = upstreamHeaders.get("cache-control");
+  if (cc) h.set("cache-control", cc);
 
-  // We proxy "/api/<...>" to "/<...>" on the Worker (strip "/api")
-  // Example: /api/v1/ledger/events -> /v1/ledger/events
-  const upstreamUrl = new URL(upstreamOrigin);
-  upstreamUrl.pathname = forwardPath;     // already stripped of /api because this handler *is* /api/*
-  upstreamUrl.search = inUrl.search;      // preserve query string
+  // Helpful for debugging
+  const vary = upstreamHeaders.get("vary");
+  if (vary) h.set("vary", vary);
 
-  const headers = new Headers(request.headers);
+  return h;
+}
 
-  // Remove headers that should not be forwarded
-  headers.delete("host");
-  headers.delete("content-length");
-
-  const method = request.method.toUpperCase();
+async function proxy(req, ctx) {
+  const upstreamUrl = buildUpstreamUrl(req, ctx?.params);
 
   const init = {
-    method,
-    headers,
+    method: req.method,
+    headers: filterRequestHeaders(req),
     redirect: "manual",
   };
 
-  // Only attach body for non-GET/HEAD
-  if (method !== "GET" && method !== "HEAD") {
-    init.body = await request.arrayBuffer();
+  // Only attach body for methods that can have one
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    init.body = await req.arrayBuffer();
   }
 
-  let res;
+  let upstreamRes;
   try {
-    res = await fetch(upstreamUrl.toString(), init);
+    upstreamRes = await fetch(upstreamUrl.toString(), init);
   } catch (e) {
-    return Response.json(
-      {
-        ok: false,
-        error: "BAD_GATEWAY",
-        code: "UPSTREAM_FETCH_FAILED",
-        details: { message: String(e?.message || e) },
-      },
-      { status: 502, headers: { "Cache-Control": "no-store" } }
-    );
+    return json(502, {
+      error: "BAD_GATEWAY",
+      code: "UPSTREAM_FETCH_FAILED",
+      details: String(e?.message || e),
+      upstream: upstreamUrl.toString(),
+    });
   }
 
-  const outHeaders = new Headers(res.headers);
-  outHeaders.set("Cache-Control", "no-store");
-  outHeaders.set("X-Asora-Proxy", "next-on-pages");
+  const resHeaders = filterResponseHeaders(upstreamRes.headers);
 
-  return new Response(res.body, { status: res.status, headers: outHeaders });
+  // Stream body through
+  return new Response(upstreamRes.body, {
+    status: upstreamRes.status,
+    headers: resHeaders,
+  });
 }
 
-export async function GET(request, context) {
-  return proxy(request, context);
+export async function GET(req, ctx) {
+  return proxy(req, ctx);
 }
 
-export async function POST(request, context) {
-  return proxy(request, context);
+export async function POST(req, ctx) {
+  return proxy(req, ctx);
 }
 
-export async function PUT(request, context) {
-  return proxy(request, context);
-}
-
-export async function PATCH(request, context) {
-  return proxy(request, context);
-}
-
-export async function DELETE(request, context) {
-  return proxy(request, context);
-}
-
-export async function OPTIONS(request) {
-  // Let upstream decide; but avoid Next.js 404 on OPTIONS
-  return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+// Optional, but helps avoid random preflight failures if the browser ever triggers it.
+export async function OPTIONS() {
+  return new Response(null, { status: 204 });
 }
