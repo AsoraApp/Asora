@@ -18,7 +18,7 @@
   "kv_namespaces": [
     {
       "binding": "ASORA_KV",
-      "id": "REPLACE_WITH_YOUR_PROD_KV_NAMESPACE_ID"
+      "id": "b43ccd4f49df403987410da83dbe557c"
     }
   ]
 }
