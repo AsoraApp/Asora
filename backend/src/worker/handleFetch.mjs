@@ -11,7 +11,7 @@ import { notificationsFetchRouter } from "./notifications.worker.mjs";
 
 import { loadTenantCollection } from "../storage/jsonStore.worker.mjs";
 
-const BUILD_STAMP = "u13-hardening-router-2025-12-21T13:30Z"; // CHANGE THIS ON EACH DEPLOY
+const BUILD_STAMP = "u13-hardening-router-tenant-source-2025-12-21T14:05Z"; // CHANGE THIS ON EACH DEPLOY
 
 function json(statusCode, body, headersObj) {
   const h = new Headers(headersObj || {});
@@ -68,10 +68,10 @@ function isAuthedTenantScoped(ctx) {
 
 function safeCreateCtx({ requestId, session }) {
   try {
+    // U13: tenantId MUST be auth-derived only (from session fields),
+    // and requestContext is authoritative for context shape.
     const c = createRequestContext({ requestId, session });
-    // Prefer computed tenantId, but fall back to session tenantId if present.
-    const tenantId = c?.tenantId || session?.tenantId || null;
-    return { ...(c || {}), requestId, session, tenantId };
+    return { ...(c || {}), requestId, session };
   } catch {
     return {
       requestId,
@@ -82,7 +82,8 @@ function safeCreateCtx({ requestId, session }) {
         actorId: null,
         authLevel: null,
       },
-      tenantId: session?.tenantId || null,
+      tenantId: null,
+      actorId: null,
     };
   }
 }
@@ -158,7 +159,7 @@ export async function handleFetch(request, env, cfctx) {
           authLevel: null,
         };
 
-  // --- Context ---
+  // --- Context (authoritative tenant source: auth-derived session fields) ---
   const ctx = safeCreateCtx({ requestId, session });
 
   // --- Classification (foundation only) ---
@@ -185,7 +186,23 @@ export async function handleFetch(request, env, cfctx) {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
 
     const denied = requireAuth(ctx, baseHeaders);
-    if (denied) return denied;
+    if (denied) {
+      emitAudit(
+        ctx,
+        {
+          eventCategory: "SECURITY",
+          eventType: "AUTH_REJECTED",
+          objectType: "auth",
+          objectId: "/api/auth/me",
+          decision: "DENY",
+          reasonCode: denied.status === 403 ? "TENANT_REQUIRED" : "AUTH_REQUIRED",
+          factsSnapshot: { method, path: pathname, classification },
+        },
+        env,
+        cfctx
+      );
+      return denied;
+    }
 
     return authMeFetch(ctx, baseHeaders);
   }
@@ -193,7 +210,23 @@ export async function handleFetch(request, env, cfctx) {
   // --- All /api/* require auth ---
   if (pathname.startsWith("/api/")) {
     const denied = requireAuth(ctx, baseHeaders);
-    if (denied) return denied;
+    if (denied) {
+      emitAudit(
+        ctx,
+        {
+          eventCategory: "SECURITY",
+          eventType: "AUTH_REJECTED",
+          objectType: "auth",
+          objectId: pathname,
+          decision: "DENY",
+          reasonCode: denied.status === 403 ? "TENANT_REQUIRED" : "AUTH_REQUIRED",
+          factsSnapshot: { method, path: pathname, classification },
+        },
+        env,
+        cfctx
+      );
+      return denied;
+    }
   }
 
   // --- U13: Audit read (read-only, tenant-scoped, newest -> oldest) ---
@@ -330,17 +363,61 @@ export async function handleFetch(request, env, cfctx) {
 
     if (method === "POST") {
       if (ctx?.session?.authLevel !== "dev") {
+        emitAudit(
+          ctx,
+          {
+            eventCategory: "SECURITY",
+            eventType: "AUTHZ_DENIED",
+            objectType: "ledger_write",
+            objectId: "/api/ledger/events",
+            decision: "DENY",
+            reasonCode: "AUTHZ_DENIED",
+            factsSnapshot: { authLevel: ctx?.session?.authLevel ?? null, classification },
+          },
+          env,
+          cfctx
+        );
         return json(403, { error: "FORBIDDEN", code: "AUTHZ_DENIED", details: null }, baseHeaders);
       }
 
       const body = await readJson(request);
       if (body === "__INVALID_JSON__") {
+        emitAudit(
+          ctx,
+          {
+            eventCategory: "SECURITY",
+            eventType: "VALIDATION_FAILED",
+            objectType: "request",
+            objectId: "/api/ledger/events",
+            decision: "DENY",
+            reasonCode: "INVALID_JSON",
+            factsSnapshot: { method, path: pathname, classification },
+          },
+          env,
+          cfctx
+        );
         return json(400, { error: "BAD_REQUEST", code: "INVALID_JSON", details: null }, baseHeaders);
       }
 
       return writeLedgerEventFromJson(ctx, body, baseHeaders, cfctx, env);
     }
 
+    if (isAuthedTenantScoped(ctx)) {
+      emitAudit(
+        ctx,
+        {
+          eventCategory: "SECURITY",
+          eventType: "ROUTE_METHOD_NOT_ALLOWED",
+          objectType: "http_route",
+          objectId: "/api/ledger/events",
+          decision: "DENY",
+          reasonCode: "METHOD_NOT_ALLOWED",
+          factsSnapshot: { method, path: pathname, classification },
+        },
+        env,
+        cfctx
+      );
+    }
     return methodNotAllowed(baseHeaders);
   }
 
@@ -355,6 +432,25 @@ export async function handleFetch(request, env, cfctx) {
   }
 
   // --- Fallthrough ---
-  if (pathname.startsWith("/api/")) return notFound(baseHeaders);
+  if (pathname.startsWith("/api/")) {
+    if (isAuthedTenantScoped(ctx)) {
+      emitAudit(
+        ctx,
+        {
+          eventCategory: "SECURITY",
+          eventType: "ROUTE_NOT_FOUND",
+          objectType: "http_route",
+          objectId: pathname,
+          decision: "DENY",
+          reasonCode: "ROUTE_NOT_FOUND",
+          factsSnapshot: { method, path: pathname, classification },
+        },
+        env,
+        cfctx
+      );
+    }
+    return notFound(baseHeaders);
+  }
+
   return notFound(baseHeaders);
 }
