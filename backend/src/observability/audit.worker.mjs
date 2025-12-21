@@ -35,12 +35,25 @@ function stableAuditId(ctx, evt) {
   return `a_${fnv1a32Hex(fp)}`;
 }
 
+const AUDIT_MAX_EVENTS = 5000; // U13: deterministic retention cap per tenant
+
+function safeArray(v) {
+  return Array.isArray(v) ? v : [];
+}
+
 async function persistAudit(env, tenantId, record) {
   try {
     const arr = (await loadTenantCollection(env, tenantId, "audit_events", [])) || [];
-    // Always keep it as an array; fail-closed to empty if corrupted.
-    const out = Array.isArray(arr) ? arr : [];
+    const out = safeArray(arr);
+
     out.push(record);
+
+    // U13: cap growth deterministically (keep newest N)
+    if (out.length > AUDIT_MAX_EVENTS) {
+      // drop oldest; preserve insertion order (append-only semantics within retained window)
+      out.splice(0, out.length - AUDIT_MAX_EVENTS);
+    }
+
     await saveTenantCollection(env, tenantId, "audit_events", out);
   } catch {
     // swallow — observability must never block
