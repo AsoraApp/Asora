@@ -15,6 +15,7 @@
 // Fallbacks:
 //   process.env.NEXT_PUBLIC_ASORA_API_BASE (if you already set it)
 //   https://asora-ui.dblair1027.workers.dev (last resort)
+export const runtime = "edge";
 
 function getUpstreamOrigin() {
   const fromServer = process.env.ASORA_WORKER_ORIGIN || "";
