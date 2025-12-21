@@ -1,44 +1,37 @@
 // backend/src/domain/requestContext.mjs
-
-function fnv1a32(str) {
-  // Deterministic, sync hash (no crypto.subtle needed)
-  let h = 0x811c9dc5;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = (h * 0x01000193) >>> 0;
-  }
-  return h >>> 0;
-}
-
-function deriveTenantIdFromToken(token) {
-  if (!token || typeof token !== "string") return null;
-  const hex = fnv1a32(token).toString(16).padStart(8, "0");
-  return `t_${hex}`;
-}
-
-function deriveActorIdFromToken(token) {
-  if (!token || typeof token !== "string") return null;
-  const hex = fnv1a32(`actor:${token}`).toString(16).padStart(8, "0");
-  return `u_${hex}`;
-}
+// U13: Deterministic request context.
+// - Never derives tenant from raw tokens (avoid ambiguity).
+// - Uses authoritative session fields produced by resolveSessionFromHeaders().
+// - Fail-closed: no tenantId unless session is authenticated AND tenantId is present.
 
 export function createRequestContext({ requestId, session }) {
-  const token = session && typeof session === "object" ? session.token : null;
-  const isAuthenticated = !!(session && session.isAuthenticated === true && token);
+  const s = session && typeof session === "object" ? session : null;
 
-  const tenantId = isAuthenticated ? deriveTenantIdFromToken(token) : null;
-  const actorId = isAuthenticated ? deriveActorIdFromToken(token) : null;
+  const isAuthenticated = !!(s && s.isAuthenticated === true);
+
+  // Authoritative tenant/actor are provided by auth layer (Bearer or dev_token compat).
+  const tenantId =
+    isAuthenticated && typeof s.tenantId === "string" && s.tenantId.length > 0 ? s.tenantId : null;
+
+  const actorId =
+    isAuthenticated && typeof s.actorId === "string" && s.actorId.length > 0 ? s.actorId : null;
 
   return {
     requestId: requestId || null,
 
     // Session (as provided by resolveSessionFromHeaders)
-    session: session || { isAuthenticated: false, token: null },
+    session: s || {
+      isAuthenticated: false,
+      token: null,
+      tenantId: null,
+      actorId: null,
+      authLevel: null,
+    },
 
-    // Tenant-scoped everywhere (session-derived only)
+    // Tenant-scoped everywhere (auth-derived only)
     tenantId,
 
-    // Optional identity handle (session-derived only)
+    // Optional identity handle (auth-derived only)
     actorId,
   };
 }
