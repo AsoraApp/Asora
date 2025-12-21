@@ -1,5 +1,5 @@
 // backend/src/api/integrations.worker.mjs
-import { emitAudit } from "../observability/audit.mjs";
+import { emitAudit } from "../observability/audit.worker.mjs";
 import { listIntegrations, getIntegration, createIntegration, setIntegrationStatus } from "../domain/integrations/registry.worker.mjs";
 import { enqueueOutbound, listOutbound, recordDispatchAttempt } from "../domain/integrations/outboundQueue.worker.mjs";
 import { buildSnapshot } from "../domain/integrations/snapshots.worker.mjs";

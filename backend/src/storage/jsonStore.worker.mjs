@@ -1,5 +1,7 @@
-function kv() {
-  const e = globalThis.__ASORA_ENV__ || {};
+// backend/src/storage/jsonStore.worker.mjs
+
+function kv(env) {
+  const e = env || {};
   return e.ASORA_KV || null;
 }
 
@@ -9,8 +11,8 @@ function key(tenantId, name) {
   return `${String(tenantId)}::${name}`;
 }
 
-export async function loadTenantCollection(tenantId, name, defaultValue) {
-  const store = kv();
+export async function loadTenantCollection(env, tenantId, name, defaultValue) {
+  const store = kv(env);
   if (!store) throw new Error("KV_NOT_BOUND");
   const k = key(tenantId, name);
   if (!k) return null;
@@ -25,13 +27,14 @@ export async function loadTenantCollection(tenantId, name, defaultValue) {
   }
 }
 
-export async function saveTenantCollection(tenantId, name, value) {
-  const store = kv();
+export async function saveTenantCollection(env, tenantId, name, value) {
+  const store = kv(env);
   if (!store) throw new Error("KV_NOT_BOUND");
   if (!tenantId) throw new Error("TENANT_NOT_RESOLVED");
 
   const k = key(tenantId, name);
   if (!k) throw new Error("INVALID_STORAGE_KEY");
 
-  await store.put(k, JSON.stringify(value, null, 2));
+  // Keep compact JSON; pretty-print increases KV usage.
+  await store.put(k, JSON.stringify(value));
 }

@@ -3,11 +3,13 @@
 
 import { loadTenantCollection, saveTenantCollection } from "../../storage/jsonStore.worker.mjs";
 import { nowUtcIso } from "../time/utc.mjs";
-import { emitAudit } from "../../observability/audit.mjs";
+import { emitAudit } from "../../observability/audit.worker.mjs";
 import { getPlanOrNull } from "./planDefinitions.mjs";
 import { PlanEnforcementError } from "./planErrors.mjs";
 
-const TENANT_META_KEY = "__tenant_meta__";
+// Stored as a dedicated tenant-scoped KV document.
+// We do NOT store this inside an "items.json" style object; keep it isolated.
+const TENANT_META_DOC = "__tenant_meta__";
 
 function normalizePlanName(x) {
   if (typeof x !== "string") return null;
@@ -15,91 +17,134 @@ function normalizePlanName(x) {
   return s ? s : null;
 }
 
-export async function getTenantMeta(ctx) {
-  const col = await loadTenantCollection(ctx.tenantId);
-  const meta = col?.[TENANT_META_KEY] && typeof col[TENANT_META_KEY] === "object" ? col[TENANT_META_KEY] : null;
-  return { col, meta };
+function requireTenantId(ctx) {
+  const tenantId = typeof ctx?.tenantId === "string" ? ctx.tenantId : null;
+  if (!tenantId) {
+    throw new PlanEnforcementError("TENANT_REQUIRED", "Tenant context required to resolve plan.", null);
+  }
+  return tenantId;
 }
 
-export async function setTenantPlan(ctx, planName) {
+function attachPlanToCtx(ctx, plan) {
+  try {
+    // Downstream write-path middleware often expects ctx.plan to exist.
+    // Keep minimal deterministic shape.
+    ctx.plan = Object.freeze({ name: plan.name });
+  } catch {
+    // swallow
+  }
+}
+
+export async function getTenantMeta(ctx, env) {
+  const tenantId = requireTenantId(ctx);
+
+  // Meta is a single object doc (or null if never set).
+  const meta = await loadTenantCollection(env, tenantId, TENANT_META_DOC, null);
+  const out = meta && typeof meta === "object" ? meta : null;
+
+  return { meta: out };
+}
+
+export async function setTenantPlan(ctx, planName, env, cfctx) {
   // Server-side utility only (admin tooling can call this). Not for client input paths.
+  const tenantId = requireTenantId(ctx);
+
   const p = normalizePlanName(planName);
   const plan = getPlanOrNull(p);
   if (!plan) {
     throw new PlanEnforcementError("UNKNOWN_PLAN", "Unknown plan name.", { planName: p });
   }
 
-  const { col, meta } = await getTenantMeta(ctx);
-  const next = {
+  const { meta } = await getTenantMeta(ctx, env);
+
+  const nextMeta = {
     ...(meta || {}),
     planName: plan.name,
     updatedAtUtc: nowUtcIso(),
   };
 
-  const nextCol = { ...(col || {}) };
-  nextCol[TENANT_META_KEY] = next;
+  await saveTenantCollection(env, tenantId, TENANT_META_DOC, nextMeta);
 
-  await saveTenantCollection(ctx.tenantId, nextCol);
+  emitAudit(
+    ctx,
+    {
+      eventCategory: "SECURITY",
+      eventType: "TENANT_PLAN_SET",
+      objectType: "tenant",
+      objectId: tenantId,
+      decision: "ALLOW",
+      reasonCode: "SET",
+      factsSnapshot: { plan: plan.name },
+    },
+    env,
+    cfctx
+  );
 
-  await emitAudit(ctx, {
-    action: "tenant.plan.set",
-    atUtc: nowUtcIso(),
-    tenantId: ctx.tenantId,
-    plan: plan.name,
-  });
-
+  attachPlanToCtx(ctx, plan);
   return plan;
 }
 
-export async function resolveTenantPlanOrThrow(ctx, actionForAudit) {
-  if (!ctx?.tenantId) {
-    throw new PlanEnforcementError("TENANT_REQUIRED", "Tenant context required to resolve plan.", null);
-  }
+/**
+ * Resolve tenant plan deterministically; fail-closed if missing/unknown.
+ * Returns: { plan, meta }
+ * Side-effect: attaches ctx.plan = { name } for downstream usage.
+ */
+export async function resolveTenantPlanOrThrow(ctx, actionForAudit, env, cfctx) {
+  const tenantId = requireTenantId(ctx);
 
-  const { col, meta } = await getTenantMeta(ctx);
+  const { meta } = await getTenantMeta(ctx, env);
 
   const planName = normalizePlanName(meta?.planName);
   if (!planName) {
-    await emitAudit(ctx, {
-      action: "plan.violation",
-      atUtc: nowUtcIso(),
-      tenantId: ctx.tenantId,
-      plan: null,
-      resourceType: null,
-      limit: null,
-      attempted: null,
-      attemptedAction: actionForAudit || "unknown",
-      reason: "MISSING_PLAN",
-    });
-    throw new PlanEnforcementError("MISSING_PLAN", "Tenant plan is missing. Fail-closed.", {
-      tenantId: ctx.tenantId,
-    });
+    emitAudit(
+      ctx,
+      {
+        eventCategory: "SECURITY",
+        eventType: "PLAN_VIOLATION",
+        objectType: "tenant",
+        objectId: tenantId,
+        decision: "DENY",
+        reasonCode: "MISSING_PLAN",
+        factsSnapshot: {
+          attemptedAction: typeof actionForAudit === "string" ? actionForAudit : "unknown",
+          plan: null,
+        },
+      },
+      env,
+      cfctx
+    );
+
+    throw new PlanEnforcementError("MISSING_PLAN", "Tenant plan is missing. Fail-closed.", { tenantId });
   }
 
   const plan = getPlanOrNull(planName);
   if (!plan) {
-    await emitAudit(ctx, {
-      action: "plan.violation",
-      atUtc: nowUtcIso(),
-      tenantId: ctx.tenantId,
-      plan: planName,
-      resourceType: null,
-      limit: null,
-      attempted: null,
-      attemptedAction: actionForAudit || "unknown",
-      reason: "UNKNOWN_PLAN",
-    });
+    emitAudit(
+      ctx,
+      {
+        eventCategory: "SECURITY",
+        eventType: "PLAN_VIOLATION",
+        objectType: "tenant",
+        objectId: tenantId,
+        decision: "DENY",
+        reasonCode: "UNKNOWN_PLAN",
+        factsSnapshot: {
+          attemptedAction: typeof actionForAudit === "string" ? actionForAudit : "unknown",
+          plan: planName,
+        },
+      },
+      env,
+      cfctx
+    );
+
     throw new PlanEnforcementError("UNKNOWN_PLAN", "Tenant plan is unknown. Fail-closed.", {
-      tenantId: ctx.tenantId,
+      tenantId,
       planName,
     });
   }
 
-  // Attach for downstream deterministic usage (write paths only)
-  ctx.plan = Object.freeze({ name: plan.name });
+  attachPlanToCtx(ctx, plan);
 
-  // Defensive: ensure tenant meta exists deterministically if absent (but DO NOT auto-assign a plan).
-  // We do not mutate here; resolution is read-only.
-
-  return { plan, col };
+  // Resolution is read-only; we do not auto-create meta or auto-assign a plan.
+  return { plan, meta };
 }
