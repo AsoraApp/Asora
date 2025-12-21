@@ -1,11 +1,15 @@
 // backend/src/auth/session.worker.mjs
-// U10: Session resolution layer.
+// U10/U13: Session resolution layer.
 // - Primary: Authorization: Bearer <signed token>
 // - Transitional (deprecated): dev_token query param compatibility bridge
 //
 // FAIL-CLOSED:
 // - No anonymous access.
 // - Resolves exactly one tenantId, or returns a deterministic denial.
+//
+// IMPORTANT:
+// - This function is async.
+// - Call signature is: resolveSessionFromHeaders(request, env)
 
 import { verifySessionToken } from "./token.worker.mjs";
 import { devTokenToSession } from "./devTokenCompat.worker.mjs";
@@ -57,6 +61,17 @@ function sanitizeSession(session) {
  *  { ok: false, status, error, code, details }
  */
 export async function resolveSessionFromHeaders(request, env) {
+  // Defensive: fail-closed if request shape is not as expected.
+  if (!request || !request.headers || typeof request.url !== "string") {
+    return {
+      ok: false,
+      status: 401,
+      error: "UNAUTHORIZED",
+      code: "AUTH_REQUIRED",
+      details: null,
+    };
+  }
+
   // 1) Primary: Bearer token
   const bearer = getBearerToken(request.headers);
   if (bearer) {
