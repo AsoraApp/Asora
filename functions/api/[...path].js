@@ -1,86 +1,97 @@
 // functions/api/[...path].js
 /**
- * ASORA — Pages Functions API proxy (same-origin -> Worker origin)
+ * ASORA — Cloudflare Pages Functions API Proxy (U14)
  *
- * Goal (U14):
- * - Browser calls:  https://asora.pages.dev/api/...
- * - Pages proxies to Worker: https://asora-ui.dblair1027.workers.dev/api/...
- * - Eliminates CORS entirely for the UI.
+ * Purpose:
+ * - Provide SAME-ORIGIN /api/* endpoints for the UI (enterprise-safe).
+ * - Proxy requests to the Worker origin without CORS.
  *
- * Env (optional):
- * - ASORA_WORKER_ORIGIN  (recommended) e.g. "https://asora-ui.dblair1027.workers.dev"
- * If not set, falls back to the current Worker origin.
+ * Mapping:
+ * - Incoming:  /api/v1/...     -> Upstream: /v1/...
+ * - Incoming:  /api/__health   -> Upstream: /__health
+ * - Incoming:  /api/__build    -> Upstream: /__build
+ * - Incoming:  /api/__meta     -> Upstream: /__meta
+ * - Incoming:  /api/auth/...   -> Upstream: /auth/...
+ * - Incoming:  /api/* (other)  -> Upstream: /* (after stripping /api)
+ *
+ * Config:
+ * - Optional env var on Pages project: ASORA_API_ORIGIN
+ *   e.g. https://asora-ui.dblair1027.workers.dev
  */
-
-const DEFAULT_WORKER_ORIGIN = "https://asora-ui.dblair1027.workers.dev";
 
 function trimSlash(s) {
   return String(s || "").replace(/\/+$/g, "");
 }
 
-function joinPath(parts) {
-  return parts
-    .filter((p) => p !== undefined && p !== null)
-    .map((p) => String(p).replace(/^\/+|\/+$/g, ""))
-    .filter(Boolean)
-    .join("/");
+function getUpstreamOrigin(env) {
+  const fromEnv = env?.ASORA_API_ORIGIN ? trimSlash(env.ASORA_API_ORIGIN) : "";
+  if (fromEnv) return fromEnv;
+
+  // Default fallback (your current Worker)
+  return "https://asora-ui.dblair1027.workers.dev";
+}
+
+function mapPath(incomingPathname) {
+  // incomingPathname starts with /api/...
+  let p = String(incomingPathname || "/");
+
+  if (!p.startsWith("/api")) return p;
+
+  // strip "/api"
+  p = p.slice("/api".length) || "/";
+
+  // Normalize specific namespaces to what the Worker serves publicly
+  // /v1/* should stay /v1/*
+  if (p.startsWith("/v1/") || p === "/v1") return p;
+
+  // /auth/* stays /auth/*
+  if (p.startsWith("/auth/") || p === "/auth") return p;
+
+  // /__* stays /__*
+  if (p.startsWith("/__")) return p;
+
+  // Otherwise leave as-is (still after /api stripping)
+  return p;
 }
 
 export async function onRequest(context) {
-  const { request, env, params } = context;
+  const { request, env } = context;
 
-  // Params for a Pages catchall route are provided as an array under the param name.
-  // With file name "[...path].js" the param key is "path".
-  const pathParts = Array.isArray(params?.path) ? params.path : [];
-  const url = new URL(request.url);
+  const upstreamOrigin = getUpstreamOrigin(env);
 
-  // Resolve Worker origin (prefer env var)
-  const workerOrigin = trimSlash(env?.ASORA_WORKER_ORIGIN || DEFAULT_WORKER_ORIGIN);
+  const incomingUrl = new URL(request.url);
+  const incomingPath = incomingUrl.pathname;
 
-  // Build upstream URL:
-  // Incoming: /api/<...>  (handled by this function)
-  // Upstream: <workerOrigin>/api/<...>?<search>
-  const upstreamPath = joinPath(["api", ...pathParts]);
-  const upstreamUrl = `${workerOrigin}/${upstreamPath}${url.search || ""}`;
+  // Only proxy /api/* (this file should only match /api/* anyway)
+  if (!incomingPath.startsWith("/api/")) {
+    return new Response("Not Found", { status: 404 });
+  }
 
-  // Clone headers and remove hop-by-hop / host-related headers that should not be forwarded as-is
-  const headers = new Headers(request.headers);
-  headers.delete("host");
-  headers.delete("connection");
-  headers.delete("keep-alive");
-  headers.delete("proxy-authenticate");
-  headers.delete("proxy-authorization");
-  headers.delete("te");
-  headers.delete("trailers");
-  headers.delete("transfer-encoding");
-  headers.delete("upgrade");
+  const upstreamPath = mapPath(incomingPath);
+  const upstreamUrl = new URL(upstreamPath + incomingUrl.search, upstreamOrigin);
 
-  // Add proxy marker (useful for debugging)
-  headers.set("X-Asora-Proxy", "pages-functions");
-
-  // Create upstream request
-  const method = (request.method || "GET").toUpperCase();
-
-  // Note: Passing request.body directly is fine in Workers/Pages runtime.
-  // For GET/HEAD, body must be null.
-  const body = method === "GET" || method === "HEAD" ? null : request.body;
-
-  const upstreamReq = new Request(upstreamUrl, {
-    method,
-    headers,
-    body,
+  // Clone request to new upstream URL
+  const init = {
+    method: request.method,
+    headers: new Headers(request.headers),
+    body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
     redirect: "manual",
-  });
+  };
+
+  // Ensure Host is not pinned (fetch will set correctly)
+  init.headers.delete("host");
+
+  const upstreamReq = new Request(upstreamUrl.toString(), init);
 
   const upstreamRes = await fetch(upstreamReq);
 
-  // Return upstream response to the browser (status, headers, and streaming body)
-  const resHeaders = new Headers(upstreamRes.headers);
-  resHeaders.set("X-Asora-Proxied-By", "pages-functions");
+  // Pass-through response (no CORS needed; same-origin UI hits Pages, not Worker)
+  const outHeaders = new Headers(upstreamRes.headers);
+  outHeaders.set("X-Asora-Proxy", "pages-functions");
+  outHeaders.set("Cache-Control", "no-store");
 
   return new Response(upstreamRes.body, {
     status: upstreamRes.status,
-    statusText: upstreamRes.statusText,
-    headers: resHeaders,
+    headers: outHeaders,
   });
 }
