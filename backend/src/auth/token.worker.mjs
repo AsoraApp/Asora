@@ -1,6 +1,12 @@
 // backend/src/auth/token.worker.mjs
 // U10: Minimal cryptographically verifiable session tokens (HMAC-SHA256).
 // Token format: asora.<payload_b64url>.<sig_b64url>
+//
+// U13: Deterministic verification + fail-closed validation.
+// - Stable error codes
+// - No randomness
+// - Constant-time signature verification via WebCrypto verify()
+// - Strict payload shape validation
 
 function utf8(s) {
   return new TextEncoder().encode(String(s));
@@ -57,6 +63,18 @@ export function nowUtcSeconds(nowMs = Date.now()) {
  * }
  */
 
+function isSafeTenantId(v) {
+  return typeof v === "string" && v.length > 0 && /^[a-zA-Z0-9._-]+$/.test(v);
+}
+
+function isSafeActorId(v) {
+  return typeof v === "string" && v.length > 0 && v.length <= 200;
+}
+
+function isSafeAuthLevel(v) {
+  return typeof v === "string" && v.length > 0 && v.length <= 50;
+}
+
 export async function signSessionToken(env, payload) {
   const secret = env?.AUTH_SECRET;
   if (!secret) throw new Error("AUTH_SECRET_MISSING");
@@ -81,9 +99,19 @@ export async function verifySessionToken(env, token) {
 
   const payloadB64 = parts[1];
   const sigB64 = parts[2];
+
+  if (!payloadB64 || !sigB64) {
+    return { ok: false, code: "AUTH_TOKEN_FORMAT", details: null };
+  }
+
   const msg = `asora.${payloadB64}`;
 
-  const sigOk = await hmacVerify(secret, msg, sigB64);
+  let sigOk = false;
+  try {
+    sigOk = await hmacVerify(secret, msg, sigB64);
+  } catch {
+    return { ok: false, code: "AUTH_TOKEN_VERIFY_ERROR", details: null };
+  }
   if (!sigOk) return { ok: false, code: "AUTH_TOKEN_INVALID_SIGNATURE", details: null };
 
   let payload;
@@ -104,9 +132,9 @@ export async function verifySessionToken(env, token) {
   const iat = payload.iat;
   const exp = payload.exp;
 
-  if (!tenantId || typeof tenantId !== "string") return { ok: false, code: "AUTH_TOKEN_MISSING_TENANT", details: null };
-  if (!actorId || typeof actorId !== "string") return { ok: false, code: "AUTH_TOKEN_MISSING_ACTOR", details: null };
-  if (!authLevel || typeof authLevel !== "string") return { ok: false, code: "AUTH_TOKEN_MISSING_AUTHLEVEL", details: null };
+  if (!isSafeTenantId(tenantId)) return { ok: false, code: "AUTH_TOKEN_MISSING_TENANT", details: null };
+  if (!isSafeActorId(actorId)) return { ok: false, code: "AUTH_TOKEN_MISSING_ACTOR", details: null };
+  if (!isSafeAuthLevel(authLevel)) return { ok: false, code: "AUTH_TOKEN_MISSING_AUTHLEVEL", details: null };
   if (!Number.isFinite(iat) || !Number.isFinite(exp)) return { ok: false, code: "AUTH_TOKEN_MISSING_TIME", details: null };
 
   const now = nowUtcSeconds();
