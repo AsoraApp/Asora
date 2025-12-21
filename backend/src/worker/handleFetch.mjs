@@ -11,7 +11,7 @@ import { notificationsFetchRouter } from "./notifications.worker.mjs";
 
 import { loadTenantCollection } from "../storage/jsonStore.worker.mjs";
 
-const BUILD_STAMP = "u13-enterprise-hardening-2025-12-21T12:30Z"; // CHANGE THIS ON EACH DEPLOY
+const BUILD_STAMP = "u13-auth-plumbing-fix-2025-12-21T13:10Z"; // CHANGE THIS ON EACH DEPLOY
 
 function json(statusCode, body, headersObj) {
   const h = new Headers(headersObj || {});
@@ -136,8 +136,19 @@ export async function handleFetch(request, env, cfctx) {
     return json(200, { ok: true, service: "asora", runtime: "cloudflare-worker", requestId }, baseHeaders);
   }
 
-  // Session
-  const session = resolveSessionFromHeaders(request.headers, u);
+  // Session (FIXED):
+  // resolveSessionFromHeaders expects (Request, env) and is async.
+  const sr = await resolveSessionFromHeaders(request, env);
+  const session =
+    sr && sr.ok === true
+      ? sr.session
+      : {
+          isAuthenticated: false,
+          token: null,
+          tenantId: null,
+          actorId: null,
+          authLevel: null,
+        };
 
   // Context
   const ctx = safeCreateCtx({ requestId, session });
