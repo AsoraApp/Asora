@@ -11,7 +11,7 @@ import { notificationsFetchRouter } from "./notifications.worker.mjs";
 
 import { loadTenantCollection } from "../storage/jsonStore.worker.mjs";
 
-const BUILD_STAMP = "u13-hardening-router-tenant-source-2025-12-21T14:05Z"; // CHANGE THIS ON EACH DEPLOY
+const BUILD_STAMP = "u13-router-error-boundary-2025-12-21T14:30Z"; // CHANGE THIS ON EACH DEPLOY
 
 function json(statusCode, body, headersObj) {
   const h = new Headers(headersObj || {});
@@ -68,8 +68,6 @@ function isAuthedTenantScoped(ctx) {
 
 function safeCreateCtx({ requestId, session }) {
   try {
-    // U13: tenantId MUST be auth-derived only (from session fields),
-    // and requestContext is authoritative for context shape.
     const c = createRequestContext({ requestId, session });
     return { ...(c || {}), requestId, session };
   } catch {
@@ -104,7 +102,43 @@ function classifyRequest(pathname, method) {
   return "infra";
 }
 
-export async function handleFetch(request, env, cfctx) {
+function mapExceptionToHttp(err) {
+  const code = err?.code || err?.message || null;
+
+  // U13: deterministic mapping for environment/binding issues
+  if (code === "KV_NOT_BOUND") {
+    return {
+      status: 503,
+      body: { error: "SERVICE_UNAVAILABLE", code: "KV_NOT_BOUND", details: null },
+      audit: { eventCategory: "SYSTEM", eventType: "STORAGE_UNAVAILABLE", reasonCode: "KV_NOT_BOUND" },
+    };
+  }
+
+  if (code === "TENANT_NOT_RESOLVED") {
+    return {
+      status: 403,
+      body: { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null },
+      audit: { eventCategory: "SECURITY", eventType: "TENANT_MISSING", reasonCode: "TENANT_NOT_RESOLVED" },
+    };
+  }
+
+  if (code === "INVALID_COLLECTION_NAME") {
+    return {
+      status: 500,
+      body: { error: "INTERNAL_ERROR", code: "INVALID_COLLECTION_NAME", details: null },
+      audit: { eventCategory: "SYSTEM", eventType: "INTERNAL_ERROR", reasonCode: "INVALID_COLLECTION_NAME" },
+    };
+  }
+
+  // Default: do not leak internals
+  return {
+    status: 500,
+    body: { error: "INTERNAL_ERROR", code: "UNHANDLED_EXCEPTION", details: null },
+    audit: { eventCategory: "SYSTEM", eventType: "INTERNAL_ERROR", reasonCode: "UNHANDLED_EXCEPTION" },
+  };
+}
+
+async function route(request, env, cfctx) {
   const u = new URL(request.url);
   const rawPath = parsePath(u.pathname);
   const pathname = normalizePath(rawPath);
@@ -159,7 +193,7 @@ export async function handleFetch(request, env, cfctx) {
           authLevel: null,
         };
 
-  // --- Context (authoritative tenant source: auth-derived session fields) ---
+  // --- Context ---
   const ctx = safeCreateCtx({ requestId, session });
 
   // --- Classification (foundation only) ---
@@ -229,7 +263,7 @@ export async function handleFetch(request, env, cfctx) {
     }
   }
 
-  // --- U13: Audit read (read-only, tenant-scoped, newest -> oldest) ---
+  // --- Audit read ---
   if (pathname === "/api/audit/events") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
 
@@ -251,7 +285,7 @@ export async function handleFetch(request, env, cfctx) {
         const bid = String(b?.auditEventId ?? "");
         return aid < bid ? -1 : aid > bid ? 1 : 0;
       }
-      return at < bt ? 1 : -1; // newest first
+      return at < bt ? 1 : -1;
     });
 
     const page = rows.slice(0, limit);
@@ -289,7 +323,7 @@ export async function handleFetch(request, env, cfctx) {
     return json(200, { vendors: Array.isArray(vendors) ? vendors : [] }, baseHeaders);
   }
 
-  // --- Ledger events (preserved behavior; do not change) ---
+  // --- Ledger events (unchanged behavior) ---
   if (pathname === "/api/ledger/events") {
     if (method === "GET") {
       const sp = u.searchParams;
@@ -402,26 +436,10 @@ export async function handleFetch(request, env, cfctx) {
       return writeLedgerEventFromJson(ctx, body, baseHeaders, cfctx, env);
     }
 
-    if (isAuthedTenantScoped(ctx)) {
-      emitAudit(
-        ctx,
-        {
-          eventCategory: "SECURITY",
-          eventType: "ROUTE_METHOD_NOT_ALLOWED",
-          objectType: "http_route",
-          objectId: "/api/ledger/events",
-          decision: "DENY",
-          reasonCode: "METHOD_NOT_ALLOWED",
-          factsSnapshot: { method, path: pathname, classification },
-        },
-        env,
-        cfctx
-      );
-    }
     return methodNotAllowed(baseHeaders);
   }
 
-  // --- Alerts / notifications routers ---
+  // Alerts / notifications routers
   {
     const r = await alertsFetchRouter(ctx, request, baseHeaders, cfctx, env);
     if (r) return r;
@@ -431,26 +449,48 @@ export async function handleFetch(request, env, cfctx) {
     if (r) return r;
   }
 
-  // --- Fallthrough ---
-  if (pathname.startsWith("/api/")) {
-    if (isAuthedTenantScoped(ctx)) {
-      emitAudit(
-        ctx,
-        {
-          eventCategory: "SECURITY",
-          eventType: "ROUTE_NOT_FOUND",
-          objectType: "http_route",
-          objectId: pathname,
-          decision: "DENY",
-          reasonCode: "ROUTE_NOT_FOUND",
-          factsSnapshot: { method, path: pathname, classification },
-        },
-        env,
-        cfctx
-      );
-    }
-    return notFound(baseHeaders);
-  }
-
+  // Fallthrough
+  if (pathname.startsWith("/api/")) return notFound(baseHeaders);
   return notFound(baseHeaders);
+}
+
+export async function handleFetch(request, env, cfctx) {
+  // U13: top-level error boundary (deterministic HTTP errors)
+  const requestId = getOrCreateRequestIdFromHeaders(request?.headers || new Headers());
+  const baseHeaders = { "X-Request-Id": requestId };
+
+  try {
+    return await route(request, env, cfctx);
+  } catch (err) {
+    // Best-effort context for audit (do not throw)
+    const ctx = safeCreateCtx({
+      requestId,
+      session: {
+        isAuthenticated: false,
+        token: null,
+        tenantId: null,
+        actorId: null,
+        authLevel: null,
+      },
+    });
+
+    const mapped = mapExceptionToHttp(err);
+
+    emitAudit(
+      ctx,
+      {
+        eventCategory: mapped.audit.eventCategory,
+        eventType: mapped.audit.eventType,
+        objectType: "exception",
+        objectId: null,
+        decision: "DENY",
+        reasonCode: mapped.audit.reasonCode,
+        factsSnapshot: { message: String(err?.message || ""), code: String(err?.code || "") },
+      },
+      env,
+      cfctx
+    );
+
+    return json(mapped.status, mapped.body, baseHeaders);
+  }
 }
