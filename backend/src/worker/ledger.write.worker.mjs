@@ -9,7 +9,8 @@ const KNOWN_AUTH_LEVELS = new Set(["user", "service", "system", "dev"]);
 const LEDGER_WRITE_ALLOWED = new Set(["service", "system", "dev"]);
 
 // Deterministic route/method facts for this execution path (no inference).
-const LEDGER_WRITE_ROUTE = "/v1/ledger/events";
+// NOTE: router normalizes /v1/* to /api/*, so writes land here.
+const LEDGER_WRITE_ROUTE = "/api/ledger/events";
 const LEDGER_WRITE_METHOD = "POST";
 
 function json(statusCode, body, baseHeaders) {
@@ -53,6 +54,7 @@ function stableLedgerEventId(ctx, event) {
     String(event?.reasonCode ?? ""),
     String(event?.referenceType ?? ""),
     String(event?.referenceId ?? ""),
+    String(event?.note ?? ""),
   ].join("|");
 
   return `le_${fnv1a32Hex(fp)}`;
@@ -87,7 +89,7 @@ function emitAuthzDeniedAudit(ctx, code, details, env, cfctx) {
 }
 
 function enforceLedgerWriteAuthorizationOrReturn(ctx, baseHeaders, env, cfctx) {
-  // Must be authenticated (U10), tenant must already be session-derived.
+  // Must be authenticated, tenant must already be session-derived.
   const authLevel = ctx?.session?.authLevel ?? null;
 
   if (!authLevel || !KNOWN_AUTH_LEVELS.has(authLevel)) {
@@ -122,20 +124,24 @@ export async function writeLedgerEventFromJson(ctx, input, baseHeaders, cfctx, e
 
   // Validation (fail-closed)
   if (!input || typeof input !== "object") {
-    emitAudit(
-      ctx,
-      {
-        eventCategory: "SECURITY",
-        eventType: "VALIDATION_FAILED",
-        objectType: "request",
-        objectId: `${LEDGER_WRITE_METHOD} ${LEDGER_WRITE_ROUTE}`,
-        decision: "DENY",
-        reasonCode: "INVALID_BODY_OBJECT",
-        factsSnapshot: { gotType: typeof input },
-      },
-      env,
-      cfctx
-    );
+    try {
+      emitAudit(
+        ctx,
+        {
+          eventCategory: "SECURITY",
+          eventType: "VALIDATION_FAILED",
+          objectType: "request",
+          objectId: `${LEDGER_WRITE_METHOD} ${LEDGER_WRITE_ROUTE}`,
+          decision: "DENY",
+          reasonCode: "INVALID_BODY_OBJECT",
+          factsSnapshot: { gotType: typeof input },
+        },
+        env,
+        cfctx
+      );
+    } catch {
+      // swallow
+    }
     return json(400, { error: "BAD_REQUEST", code: "INVALID_BODY_OBJECT", details: null }, baseHeaders);
   }
 
@@ -154,9 +160,65 @@ export async function writeLedgerEventFromJson(ctx, input, baseHeaders, cfctx, e
 
   const now = nowUtcIso();
 
-  const event = {
+  const eventCore = {
     tenantId: ctx.tenantId,
     createdAtUtc: now,
     itemId: input.itemId,
     hubId: typeof input.hubId === "string" ? input.hubId : null,
-    binId: typeof input.binId
+    binId: typeof input.binId === "string" ? input.binId : null,
+    qtyDelta: input.qtyDelta,
+    reasonCode: typeof input.reasonCode === "string" ? input.reasonCode : "UNSPECIFIED",
+    referenceType: typeof input.referenceType === "string" ? input.referenceType : null,
+    referenceId: typeof input.referenceId === "string" ? input.referenceId : null,
+    note: typeof input.note === "string" ? input.note : null,
+  };
+
+  const ledgerEventId = stableLedgerEventId(ctx, eventCore);
+
+  const event = {
+    ledgerEventId,
+    ...eventCore,
+  };
+
+  // Append-only persistence
+  const events = (await loadTenantCollection(env, ctx.tenantId, "ledger_events", [])) || [];
+  const rows = Array.isArray(events) ? events : [];
+
+  rows.push(event);
+  await saveTenantCollection(env, ctx.tenantId, "ledger_events", rows);
+
+  // Audit: append succeeded
+  try {
+    emitAudit(
+      ctx,
+      {
+        eventCategory: "INVENTORY",
+        eventType: "LEDGER_EVENT_APPEND",
+        objectType: "ledger_event",
+        objectId: event.ledgerEventId,
+        decision: "ALLOW",
+        reasonCode: "APPENDED",
+        factsSnapshot: {
+          itemId: event.itemId,
+          qtyDelta: event.qtyDelta,
+          hubId: event.hubId,
+          binId: event.binId,
+        },
+      },
+      env,
+      cfctx
+    );
+  } catch {
+    // swallow
+  }
+
+  // Non-blocking alert evaluation
+  try {
+    const p = evaluateAlertsOnce(ctx.tenantId, "LEDGER_EVENT_COMMITTED", event);
+    if (cfctx && typeof cfctx.waitUntil === "function") cfctx.waitUntil(p);
+  } catch {
+    // swallow
+  }
+
+  return json(201, { event }, baseHeaders);
+}
