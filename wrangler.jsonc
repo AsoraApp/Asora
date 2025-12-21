@@ -3,7 +3,7 @@
   // IMPORTANT:
   // Set this to the EXACT Worker name shown in Cloudflare Dashboard → Workers.
   // If this name does not match, deploy will fail or create a different Worker.
-  "name": "asora",
+  "name": "asora-ui",
 
   // Keep this current and deterministic.
   "compatibility_date": "2025-12-21",
