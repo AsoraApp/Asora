@@ -1,10 +1,10 @@
+// web/lib/ledgerCache.js
 "use client";
 
 /**
  * Client-only, per-tab, in-memory cache for ledger events.
  * - No timers (deterministic)
  * - Cache is cleared only by calling clearLedgerCache() or hard refresh.
- * - dev_token is handled by asoraFetch; cache is therefore per-tab and shared across views.
  *
  * U8 addition (UI-only): cache metadata for operator clarity.
  * - lastFetchedUtc: when the last successful fetch completed (UTC ISO string)
@@ -36,6 +36,16 @@ export function getLedgerCacheInfo() {
   };
 }
 
+function toError(r) {
+  const e = new Error(r?.error || "HTTP_ERROR");
+  e.name = "AsoraFetchError";
+  e.status = r?.status || 0;
+  e.code = r?.code || "HTTP_ERROR";
+  e.url = r?.url || "";
+  e.details = r?.details ?? null;
+  return e;
+}
+
 export async function getLedgerEventsCached(asoraGetJson) {
   if (_cachedResult) {
     _lastSource = "cached";
@@ -47,8 +57,12 @@ export async function getLedgerEventsCached(asoraGetJson) {
   _cachedPromise = (async () => {
     try {
       const r = await asoraGetJson("/v1/ledger/events", {});
-      const events = Array.isArray(r?.events) ? r.events : [];
+      if (!r || r.ok !== true) throw toError(r || {});
+
+      const json = r.data || {};
+      const events = Array.isArray(json?.events) ? json.events : [];
       const out = { events };
+
       _cachedResult = out;
       _lastFetchedUtc = new Date().toISOString();
       _lastSource = "fresh";
