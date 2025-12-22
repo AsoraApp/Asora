@@ -6,9 +6,9 @@ import { getAuthMode, getBearerToken } from "@/lib/authStorage";
 import { asoraGetJson } from "@/lib/asoraFetch";
 
 /**
- * U15-2 + U15-4
+ * U15-2 + U15-4 + U15-5
  * - Auth indicator (DEV | BEARER | UNAUTH) w/ severity for invalid/expired Bearer
- * - Adds Audit nav entry
+ * - Nav: Auth, Audit, Ledger Export
  * - No polling; one probe on mount + manual recheck + token-change refresh
  */
 
@@ -166,6 +166,9 @@ export default function AdminHeader() {
             </Link>
             <Link className="muted" href="/audit">
               Audit
+            </Link>
+            <Link className="muted" href="/ledger/export">
+              Ledger Export
             </Link>
           </nav>
         </div>
