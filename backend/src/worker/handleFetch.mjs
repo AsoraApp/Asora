@@ -11,14 +11,11 @@ import { notificationsFetchRouter } from "./notifications.worker.mjs";
 
 import { loadTenantCollection } from "../storage/jsonStore.worker.mjs";
 
-const BUILD_STAMP = "u13-cors-ui-baseurl-fix-2025-12-21T16:58Z"; // CHANGE THIS ON EACH DEPLOY
+const BUILD_STAMP = "u15-3-rate-limit-soft-2025-12-22T03:00Z"; // CHANGE THIS ON EACH DEPLOY
 
 // ---- CORS (UI -> Worker API) ----
 // Keep conservative; only allow known UI origins.
-const CORS_ALLOW_ORIGINS = new Set([
-  "https://asora.pages.dev",
-  "http://localhost:3000",
-]);
+const CORS_ALLOW_ORIGINS = new Set(["https://asora.pages.dev", "http://localhost:3000"]);
 
 function getAllowedOrigin(request) {
   const origin = request?.headers?.get?.("Origin") || request?.headers?.get?.("origin") || "";
@@ -82,11 +79,7 @@ function normalizePath(pathname) {
 }
 
 function methodNotAllowed(baseHeaders) {
-  return json(
-    405,
-    { error: "METHOD_NOT_ALLOWED", code: "METHOD_NOT_ALLOWED", details: null },
-    baseHeaders
-  );
+  return json(405, { error: "METHOD_NOT_ALLOWED", code: "METHOD_NOT_ALLOWED", details: null }, baseHeaders);
 }
 
 function notFound(baseHeaders) {
@@ -120,13 +113,14 @@ function safeCreateCtx({ requestId, session }) {
   } catch {
     return {
       requestId,
-      session: session || {
-        isAuthenticated: false,
-        token: null,
-        tenantId: null,
-        actorId: null,
-        authLevel: null,
-      },
+      session:
+        session || ({
+          isAuthenticated: false,
+          token: null,
+          tenantId: null,
+          actorId: null,
+          authLevel: null,
+        }),
       tenantId: null,
       actorId: null,
     };
@@ -140,18 +134,151 @@ function safeCreateCtx({ requestId, session }) {
  * - "write": non-GET under /api/*
  */
 function classifyRequest(pathname, method) {
-  if (
-    pathname === "/" ||
-    pathname === "/__build" ||
-    pathname === "/__meta" ||
-    pathname === "/__health"
-  ) {
+  if (pathname === "/" || pathname === "/__build" || pathname === "/__meta" || pathname === "/__health") {
     return "infra";
   }
   if (pathname.startsWith("/api/")) {
     return method === "GET" ? "read" : "write";
   }
   return "infra";
+}
+
+/**
+ * U15-3: Soft rate limits (enforced, but generous).
+ *
+ * IMPORTANT:
+ * - Uses in-memory counters only (no durable state).
+ * - Limits are "soft": intended to prevent abuse and runaway loops, not normal ops.
+ * - Tenant-scoped for /api/*; infra scoped by source IP when possible.
+ * - Deterministic 429 shape + headers.
+ *
+ * Windows:
+ * - Fixed 60-second window, deterministic reset boundary per key.
+ */
+
+// Fixed window size (seconds)
+const RL_WINDOW_SEC = 60;
+
+// Generous limits to avoid breaking normal operator workflows.
+const RL_LIMITS = {
+  infra: 120, // per minute per IP-ish
+  read: 600, // per minute per tenant
+  write: 120, // per minute per tenant
+};
+
+// In-memory fixed-window counters: key -> { windowStartMs, count }
+const __RL = new Map();
+
+function getSourceIp(request, cfctx) {
+  // Prefer CF edge-provided headers when present.
+  const h = request?.headers;
+  const ip =
+    h?.get?.("CF-Connecting-IP") ||
+    h?.get?.("cf-connecting-ip") ||
+    h?.get?.("X-Forwarded-For") ||
+    h?.get?.("x-forwarded-for") ||
+    (cfctx && typeof cfctx === "object" ? cfctx.clientIp : null) ||
+    null;
+
+  if (!ip) return "unknown";
+  // If XFF has a list, take first hop.
+  const first = String(ip).split(",")[0].trim();
+  return first || "unknown";
+}
+
+function fixedWindowStartMs(nowMs) {
+  // Deterministic floor to 60s boundaries.
+  return Math.floor(nowMs / (RL_WINDOW_SEC * 1000)) * (RL_WINDOW_SEC * 1000);
+}
+
+function makeRateKey({ classification, tenantId, request, cfctx }) {
+  if (classification === "infra") {
+    const ip = getSourceIp(request, cfctx);
+    return `infra:${ip}`;
+  }
+  // /api/* must be tenant scoped (hard boundary).
+  return `${classification}:tenant:${String(tenantId || "none")}`;
+}
+
+function buildRateHeaders({ limit, remaining, resetAtSec, retryAfterSec }) {
+  const h = {};
+  // These are informational; deterministic values.
+  h["X-RateLimit-Limit"] = String(limit);
+  h["X-RateLimit-Remaining"] = String(Math.max(0, remaining));
+  h["X-RateLimit-Reset"] = String(resetAtSec); // unix seconds
+  if (retryAfterSec !== null && retryAfterSec !== undefined) {
+    h["Retry-After"] = String(Math.max(0, Math.ceil(retryAfterSec)));
+  }
+  return h;
+}
+
+function rateLimitCheck({ classification, tenantId, request, cfctx }) {
+  const limit = RL_LIMITS[classification] ?? RL_LIMITS.infra;
+  const nowMs = Date.now();
+  const windowStartMs = fixedWindowStartMs(nowMs);
+  const resetAtMs = windowStartMs + RL_WINDOW_SEC * 1000;
+
+  const key = makeRateKey({ classification, tenantId, request, cfctx });
+
+  const prev = __RL.get(key);
+  if (!prev || prev.windowStartMs !== windowStartMs) {
+    __RL.set(key, { windowStartMs, count: 1 });
+    return {
+      ok: true,
+      key,
+      limit,
+      remaining: limit - 1,
+      resetAtMs,
+      retryAfterSec: null,
+      windowStartMs,
+    };
+  }
+
+  const nextCount = prev.count + 1;
+  prev.count = nextCount;
+
+  if (nextCount <= limit) {
+    return {
+      ok: true,
+      key,
+      limit,
+      remaining: limit - nextCount,
+      resetAtMs,
+      retryAfterSec: null,
+      windowStartMs,
+    };
+  }
+
+  const retryAfterSec = (resetAtMs - nowMs) / 1000;
+  return {
+    ok: false,
+    key,
+    limit,
+    remaining: 0,
+    resetAtMs,
+    retryAfterSec,
+    windowStartMs,
+  };
+}
+
+function tooManyRequests(baseHeaders, details, rate) {
+  const resetAtSec = Math.floor((rate?.resetAtMs || 0) / 1000) || 0;
+  const extra = buildRateHeaders({
+    limit: rate?.limit ?? 0,
+    remaining: 0,
+    resetAtSec,
+    retryAfterSec: rate?.retryAfterSec ?? 0,
+  });
+
+  return json(
+    429,
+    {
+      error: "TOO_MANY_REQUESTS",
+      code: "RATE_LIMITED",
+      details: details || null,
+    },
+    { ...(baseHeaders || {}), ...extra }
+  );
 }
 
 function mapExceptionToHttp(err) {
@@ -209,16 +336,120 @@ async function route(request, env, cfctx) {
   // --- Public infra (no auth) ---
   if (pathname === "/__build") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
+
+    // Soft rate limit infra (by IP-ish)
+    const classification = "infra";
+    const rl = rateLimitCheck({ classification, tenantId: null, request, cfctx });
+    if (!rl.ok) {
+      // Audit (never blocks on audit failure)
+      try {
+        const ctx = safeCreateCtx({
+          requestId,
+          session: { isAuthenticated: false, token: null, tenantId: null, actorId: null, authLevel: null },
+        });
+        emitAudit(
+          ctx,
+          {
+            eventCategory: "SECURITY",
+            eventType: "RATE_LIMIT",
+            objectType: "http_request",
+            objectId: pathname,
+            decision: "DENY",
+            reasonCode: "RATE_LIMITED",
+            factsSnapshot: { method, path: pathname, classification, limit: rl.limit, windowSec: RL_WINDOW_SEC },
+          },
+          env,
+          cfctx
+        );
+      } catch {
+        // ignore
+      }
+
+      return tooManyRequests(
+        baseHeaders,
+        { classification, limit: rl.limit, windowSec: RL_WINDOW_SEC, retryAfterSec: Math.ceil(rl.retryAfterSec || 0) },
+        rl
+      );
+    }
+
     return json(200, { ok: true, build: BUILD_STAMP, requestId }, baseHeaders);
   }
 
   if (pathname === "/__health") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
+
+    const classification = "infra";
+    const rl = rateLimitCheck({ classification, tenantId: null, request, cfctx });
+    if (!rl.ok) {
+      try {
+        const ctx = safeCreateCtx({
+          requestId,
+          session: { isAuthenticated: false, token: null, tenantId: null, actorId: null, authLevel: null },
+        });
+        emitAudit(
+          ctx,
+          {
+            eventCategory: "SECURITY",
+            eventType: "RATE_LIMIT",
+            objectType: "http_request",
+            objectId: pathname,
+            decision: "DENY",
+            reasonCode: "RATE_LIMITED",
+            factsSnapshot: { method, path: pathname, classification, limit: rl.limit, windowSec: RL_WINDOW_SEC },
+          },
+          env,
+          cfctx
+        );
+      } catch {
+        // ignore
+      }
+
+      return tooManyRequests(
+        baseHeaders,
+        { classification, limit: rl.limit, windowSec: RL_WINDOW_SEC, retryAfterSec: Math.ceil(rl.retryAfterSec || 0) },
+        rl
+      );
+    }
+
     return json(200, { ok: true }, baseHeaders);
   }
 
   if (pathname === "/__meta") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
+
+    const classification = "infra";
+    const rl = rateLimitCheck({ classification, tenantId: null, request, cfctx });
+    if (!rl.ok) {
+      try {
+        const ctx = safeCreateCtx({
+          requestId,
+          session: { isAuthenticated: false, token: null, tenantId: null, actorId: null, authLevel: null },
+        });
+        emitAudit(
+          ctx,
+          {
+            eventCategory: "SECURITY",
+            eventType: "RATE_LIMIT",
+            objectType: "http_request",
+            objectId: pathname,
+            decision: "DENY",
+            reasonCode: "RATE_LIMITED",
+            factsSnapshot: { method, path: pathname, classification, limit: rl.limit, windowSec: RL_WINDOW_SEC },
+          },
+          env,
+          cfctx
+        );
+      } catch {
+        // ignore
+      }
+
+      return tooManyRequests(
+        baseHeaders,
+        { classification, limit: rl.limit, windowSec: RL_WINDOW_SEC, retryAfterSec: Math.ceil(rl.retryAfterSec || 0) },
+        rl
+      );
+    }
+
     return json(
       200,
       {
@@ -236,6 +467,40 @@ async function route(request, env, cfctx) {
 
   if (pathname === "/") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
+
+    const classification = "infra";
+    const rl = rateLimitCheck({ classification, tenantId: null, request, cfctx });
+    if (!rl.ok) {
+      try {
+        const ctx = safeCreateCtx({
+          requestId,
+          session: { isAuthenticated: false, token: null, tenantId: null, actorId: null, authLevel: null },
+        });
+        emitAudit(
+          ctx,
+          {
+            eventCategory: "SECURITY",
+            eventType: "RATE_LIMIT",
+            objectType: "http_request",
+            objectId: pathname,
+            decision: "DENY",
+            reasonCode: "RATE_LIMITED",
+            factsSnapshot: { method, path: pathname, classification, limit: rl.limit, windowSec: RL_WINDOW_SEC },
+          },
+          env,
+          cfctx
+        );
+      } catch {
+        // ignore
+      }
+
+      return tooManyRequests(
+        baseHeaders,
+        { classification, limit: rl.limit, windowSec: RL_WINDOW_SEC, retryAfterSec: Math.ceil(rl.retryAfterSec || 0) },
+        rl
+      );
+    }
+
     return json(200, { ok: true, service: "asora", runtime: "cloudflare-worker", requestId }, baseHeaders);
   }
 
@@ -255,7 +520,7 @@ async function route(request, env, cfctx) {
   // --- Context ---
   const ctx = safeCreateCtx({ requestId, session });
 
-  // --- Classification (foundation only) ---
+  // --- Classification ---
   const classification = classifyRequest(pathname, method);
 
   // --- Base audit (never blocks) ---
@@ -273,6 +538,57 @@ async function route(request, env, cfctx) {
     env,
     cfctx
   );
+
+  // --- Rate limit enforcement ---
+  // - For /api/* we enforce tenant-scoped (hard boundary).
+  // - If unauthenticated, /api/* will fail-closed anyway; we do NOT attempt to infer tenant.
+  // - For infra we already enforced above.
+  if (pathname.startsWith("/api/")) {
+    // If tenant not present, skip rate limiting (auth will deny deterministically).
+    // This avoids accidental shared buckets for unauth / missing tenant.
+    if (ctx?.tenantId) {
+      const rl = rateLimitCheck({ classification, tenantId: ctx.tenantId, request, cfctx });
+      if (!rl.ok) {
+        emitAudit(
+          ctx,
+          {
+            eventCategory: "SECURITY",
+            eventType: "RATE_LIMIT",
+            objectType: "http_request",
+            objectId: pathname,
+            decision: "DENY",
+            reasonCode: "RATE_LIMITED",
+            factsSnapshot: {
+              method,
+              path: pathname,
+              classification,
+              tenantId: ctx.tenantId,
+              limit: rl.limit,
+              windowSec: RL_WINDOW_SEC,
+            },
+          },
+          env,
+          cfctx
+        );
+
+        return tooManyRequests(
+          baseHeaders,
+          {
+            classification,
+            tenantId: ctx.tenantId,
+            limit: rl.limit,
+            windowSec: RL_WINDOW_SEC,
+            retryAfterSec: Math.ceil(rl.retryAfterSec || 0),
+          },
+          rl
+        );
+      }
+
+      // Attach informational headers on success (deterministic).
+      // We do not modify every response object here; downstream handlers can return normally.
+      // For simplicity and determinism, we keep enforcement-only at this stage.
+    }
+  }
 
   // --- Auth route ---
   if (pathname === "/api/auth/me") {
