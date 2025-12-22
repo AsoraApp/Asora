@@ -11,7 +11,7 @@ import { notificationsFetchRouter } from "./notifications.worker.mjs";
 
 import { loadTenantCollection } from "../storage/jsonStore.worker.mjs";
 
-const BUILD_STAMP = "u15-3-rate-limit-soft-2025-12-22T03:00Z"; // CHANGE THIS ON EACH DEPLOY
+const BUILD_STAMP = "u17-ledger-read-ordering-2025-12-22T22:15Z"; // CHANGE THIS ON EACH DEPLOY
 
 // ---- CORS (UI -> Worker API) ----
 // Keep conservative; only allow known UI origins.
@@ -313,6 +313,91 @@ function mapExceptionToHttp(err) {
     body: { error: "INTERNAL_ERROR", code: "UNHANDLED_EXCEPTION", details: null },
     audit: { eventCategory: "SYSTEM", eventType: "INTERNAL_ERROR", reasonCode: "UNHANDLED_EXCEPTION" },
   };
+}
+
+// ---- U17 helpers: deterministic ordering + cursor keys ----
+
+function parseOptionalInt(raw) {
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+  if (!Number.isInteger(n)) return null;
+  return n;
+}
+
+function parseOptionalString(raw) {
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim();
+  return s ? s : null;
+}
+
+function normalizeSequence(e) {
+  // U16 writes integer sequence. For legacy events without sequence, use 0 (deterministic fallback).
+  const n = Number(e?.sequence);
+  return Number.isInteger(n) && Number.isFinite(n) ? n : 0;
+}
+
+function normalizeEventId(e) {
+  // U16 canonical: event_id. Back-compat: ledgerEventId (and some older shapes may only have that).
+  return String(e?.event_id ?? e?.ledgerEventId ?? "").trim();
+}
+
+// Compare keys (seq,eventId) in ascending order. Returns -1/0/1.
+function compareLedgerKeysAsc(aSeq, aId, bSeq, bId) {
+  if (aSeq < bSeq) return -1;
+  if (aSeq > bSeq) return 1;
+  // seq tie -> event_id tiebreaker (string compare; deterministic)
+  if (aId < bId) return -1;
+  if (aId > bId) return 1;
+  return 0;
+}
+
+function keyFromEvent(e) {
+  return { seq: normalizeSequence(e), id: normalizeEventId(e) };
+}
+
+function validateCursorPair(seq, id) {
+  // If one is provided, we allow the other to be missing.
+  // Missing id means the cursor anchors only by seq; comparisons remain deterministic.
+  if (seq === null && id === null) return { ok: true };
+  if (seq !== null && !Number.isInteger(seq)) return { ok: false, code: "INVALID_CURSOR" };
+  if (id !== null && typeof id !== "string") return { ok: false, code: "INVALID_CURSOR" };
+  return { ok: true };
+}
+
+function applyCursorFilter(rows, { beforeSeq, beforeId, afterSeq, afterId }) {
+  // Semantics are order-independent:
+  // - before_* means strictly < (beforeSeq,beforeId)
+  // - after_* means strictly > (afterSeq,afterId)
+  //
+  // If *Id is null, comparison is seq-only with deterministic behavior:
+  // - for before: keep seq < beforeSeq, or seq === beforeSeq and (id < "" ?) -> we treat as seq-only boundary (strict).
+  // - for after: keep seq > afterSeq, or seq === afterSeq and (id > "" ?) -> treat as seq-only boundary (strict).
+  //
+  // This remains deterministic; callers should provide both for fully stable paging.
+  let out = rows;
+
+  if (beforeSeq !== null) {
+    const bId = beforeId ?? null;
+    out = out.filter((e) => {
+      const k = keyFromEvent(e);
+      if (bId === null) return k.seq < beforeSeq; // seq-only strict
+      return compareLedgerKeysAsc(k.seq, k.id, beforeSeq, bId) === -1;
+    });
+  }
+
+  if (afterSeq !== null) {
+    const aId = afterId ?? null;
+    out = out.filter((e) => {
+      const k = keyFromEvent(e);
+      if (aId === null) return k.seq > afterSeq; // seq-only strict
+      return compareLedgerKeysAsc(k.seq, k.id, afterSeq, aId) === 1;
+    });
+  }
+
+  return out;
 }
 
 async function route(request, env, cfctx) {
@@ -714,10 +799,38 @@ async function route(request, env, cfctx) {
         return json(400, { error: "BAD_REQUEST", code: "INVALID_ORDER", details: { order } }, baseHeaders);
       }
 
+      // U17 deterministic pagination inputs
+      const beforeSeq = parseOptionalInt(sp.get("before_seq"));
+      const afterSeq = parseOptionalInt(sp.get("after_seq"));
+      const beforeEventId = parseOptionalString(sp.get("before_event_id"));
+      const afterEventId = parseOptionalString(sp.get("after_event_id"));
+
+      // Legacy time filters (back-compat) — filters only, never ordering keys.
       const before = sp.get("before");
       const after = sp.get("after");
+
+      // Disallow contradictory cursor directions (deterministic).
+      const hasBeforeCursor = beforeSeq !== null || beforeEventId !== null;
+      const hasAfterCursor = afterSeq !== null || afterEventId !== null;
+      if (hasBeforeCursor && hasAfterCursor) {
+        return json(
+          400,
+          { error: "BAD_REQUEST", code: "BEFORE_AND_AFTER_CURSOR", details: { before_seq: beforeSeq, after_seq: afterSeq } },
+          baseHeaders
+        );
+      }
+
       if (before && after) {
         return json(400, { error: "BAD_REQUEST", code: "BEFORE_AND_AFTER", details: null }, baseHeaders);
+      }
+
+      const cursorBeforeOk = validateCursorPair(beforeSeq, beforeEventId);
+      if (!cursorBeforeOk.ok) {
+        return json(400, { error: "BAD_REQUEST", code: "INVALID_CURSOR", details: { before_seq: sp.get("before_seq"), before_event_id: sp.get("before_event_id") } }, baseHeaders);
+      }
+      const cursorAfterOk = validateCursorPair(afterSeq, afterEventId);
+      if (!cursorAfterOk.ok) {
+        return json(400, { error: "BAD_REQUEST", code: "INVALID_CURSOR", details: { after_seq: sp.get("after_seq"), after_event_id: sp.get("after_event_id") } }, baseHeaders);
       }
 
       const beforeTs = before ? Date.parse(before) : null;
@@ -731,25 +844,81 @@ async function route(request, env, cfctx) {
       const all = (await loadTenantCollection(env, ctx.tenantId, "ledger_events", [])) || [];
       let rows = Array.isArray(all) ? all.slice() : [];
 
+      // Optional item filter
       if (itemId) rows = rows.filter((e) => e?.itemId === itemId);
+
+      // Legacy timestamp filters (filters only)
       if (beforeTs !== null) rows = rows.filter((e) => Date.parse(e?.createdAtUtc) < beforeTs);
       if (afterTs !== null) rows = rows.filter((e) => Date.parse(e?.createdAtUtc) > afterTs);
 
+      // U17 cursor filters (deterministic keys)
+      rows = applyCursorFilter(rows, {
+        beforeSeq: beforeSeq !== null ? beforeSeq : null,
+        beforeId: beforeEventId,
+        afterSeq: afterSeq !== null ? afterSeq : null,
+        afterId: afterEventId,
+      });
+
+      // U17 deterministic sort by (sequence, event_id). No createdAtUtc ordering dependency.
       rows.sort((a, b) => {
-        const at = String(a?.createdAtUtc ?? "");
-        const bt = String(b?.createdAtUtc ?? "");
-        if (at === bt) {
-          const aid = String(a?.ledgerEventId ?? "");
-          const bid = String(b?.ledgerEventId ?? "");
-          return aid < bid ? -1 : aid > bid ? 1 : 0;
-        }
-        return at < bt ? -1 : 1;
+        const ak = keyFromEvent(a);
+        const bk = keyFromEvent(b);
+        return compareLedgerKeysAsc(ak.seq, ak.id, bk.seq, bk.id);
       });
 
       if (order === "desc") rows.reverse();
 
       const page = rows.slice(0, limit);
       const last = page[page.length - 1] || null;
+
+      const lastKey = last ? keyFromEvent(last) : null;
+
+      // Next tokens are deterministic keys (and only emitted when there is a last row).
+      const nextBeforeSeq = order === "desc" && lastKey ? lastKey.seq : null;
+      const nextBeforeEventId = order === "desc" && lastKey ? lastKey.id : null;
+      const nextAfterSeq = order === "asc" && lastKey ? lastKey.seq : null;
+      const nextAfterEventId = order === "asc" && lastKey ? lastKey.id : null;
+
+      // U17.4 (optional): include seq/event_id in audit factsSnapshot for traceability (no semantics).
+      emitAudit(
+        ctx,
+        {
+          eventCategory: "SYSTEM",
+          eventType: "LEDGER_READ",
+          objectType: "ledger_events",
+          objectId: "/api/ledger/events",
+          decision: "SYSTEM",
+          reasonCode: "SERVED",
+          factsSnapshot: {
+            method,
+            path: pathname,
+            classification,
+            tenantId: ctx?.tenantId ?? null,
+            limit,
+            order,
+            itemId: itemId || null,
+            // legacy filters
+            before: before || null,
+            after: after || null,
+            // deterministic cursor inputs
+            before_seq: beforeSeq,
+            before_event_id: beforeEventId,
+            after_seq: afterSeq,
+            after_event_id: afterEventId,
+            // deterministic cursor outputs
+            nextBeforeSeq,
+            nextBeforeEventId,
+            nextAfterSeq,
+            nextAfterEventId,
+            returned: page.length,
+            // last key served (useful for debugging pagination)
+            lastSeq: lastKey ? lastKey.seq : null,
+            lastEventId: lastKey ? lastKey.id : null,
+          },
+        },
+        env,
+        cfctx
+      );
 
       return json(
         200,
@@ -758,12 +927,16 @@ async function route(request, env, cfctx) {
           page: {
             limit,
             order,
+            // legacy filters (back-compat)
             before: before || null,
             after: after || null,
             itemId,
             returned: page.length,
-            nextBefore: order === "desc" && last ? last.createdAtUtc : null,
-            nextAfter: order === "asc" && last ? last.createdAtUtc : null,
+            // U17 deterministic pagination outputs
+            nextBeforeSeq,
+            nextBeforeEventId,
+            nextAfterSeq,
+            nextAfterEventId,
           },
         },
         baseHeaders
