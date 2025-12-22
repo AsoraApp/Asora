@@ -1,3 +1,4 @@
+// frontend/src/app/api/[...path]/route.js
 export const runtime = "edge";
 
 /**
@@ -5,7 +6,7 @@ export const runtime = "edge";
  * Proxy only. No business logic.
  *
  * Env required on Pages:
- *  - ASORA_WORKER_BASE_URL  e.g. https://<your-worker-subdomain>.<domain>.workers.dev
+ *  - ASORA_WORKER_ORIGIN  e.g. https://<your-worker-subdomain>.<domain>.workers.dev
  *
  * This handler forwards:
  *  - method
@@ -14,7 +15,7 @@ export const runtime = "edge";
  *  - body for non-GET
  *
  * Fail-closed:
- *  - If ASORA_WORKER_BASE_URL missing -> 503
+ *  - If ASORA_WORKER_ORIGIN missing -> 503
  */
 
 function json(status, body) {
@@ -31,19 +32,20 @@ function baseUrl() {
   return String(v).replace(/\/+$/g, "");
 }
 
-async function proxy(req, ctx) {
+async function proxy(req) {
   const base = baseUrl();
   if (!base) {
-    return json(503, { error: "SERVICE_UNAVAILABLE", code: "WORKER_BASE_URL_MISSING", details: null });
+    return json(503, { error: "SERVICE_UNAVAILABLE", code: "WORKER_ORIGIN_MISSING", details: null });
   }
 
   const url = new URL(req.url);
-  const path = url.pathname.replace(/^\/api/, "/api"); // keep /api prefix intact
-  const target = `${base}${path}${url.search}`;
+
+  // Pages receives /api/<...>. We forward exactly /api/<...> to the Worker.
+  const target = `${base}${url.pathname}${url.search}`;
 
   const headers = new Headers(req.headers);
 
-  // Do not leak host-specific headers.
+  // Do not forward host-specific hop-by-hop headers.
   headers.delete("host");
   headers.delete("connection");
   headers.delete("content-length");
@@ -58,27 +60,25 @@ async function proxy(req, ctx) {
   }
 
   const upstream = await fetch(target, init);
-
-  // Return upstream response as-is.
   const outHeaders = new Headers(upstream.headers);
   return new Response(upstream.body, { status: upstream.status, headers: outHeaders });
 }
 
-export async function GET(req, ctx) {
-  return proxy(req, ctx);
+export async function GET(req) {
+  return proxy(req);
 }
-export async function POST(req, ctx) {
-  return proxy(req, ctx);
+export async function POST(req) {
+  return proxy(req);
 }
-export async function PUT(req, ctx) {
-  return proxy(req, ctx);
+export async function PUT(req) {
+  return proxy(req);
 }
-export async function PATCH(req, ctx) {
-  return proxy(req, ctx);
+export async function PATCH(req) {
+  return proxy(req);
 }
-export async function DELETE(req, ctx) {
-  return proxy(req, ctx);
+export async function DELETE(req) {
+  return proxy(req);
 }
-export async function OPTIONS(req, ctx) {
-  return proxy(req, ctx);
+export async function OPTIONS(req) {
+  return proxy(req);
 }
