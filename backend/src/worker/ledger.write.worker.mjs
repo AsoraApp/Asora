@@ -193,8 +193,7 @@ export async function writeLedgerEventFromJson(ctx, input, baseHeaders, cfctx, e
   const event_id = computeLedgerEventId(ctx, eventCore);
 
   // U16: canonical stored shape (frozen)
-  // Compatibility:
-  // - Keep ledgerEventId as an alias to event_id so existing readers/sorters remain stable.
+  // Compatibility: keep ledgerEventId alias for existing readers.
   const event = {
     event_id,
     ledgerEventId: event_id,
