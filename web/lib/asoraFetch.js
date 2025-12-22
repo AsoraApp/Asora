@@ -93,8 +93,8 @@ function normalizePath(path) {
   if (p.startsWith("/api/")) return p;
   if (p === "/api") return "/api";
 
-  // Legacy "/v1/*" -> "/api/*" (matches Worker normalizePath shim)
-  if (p.startsWith("/v1/")) return `/api/${p.slice("/v1/".length)}`; // "/v1/ledger/events" -> "/api/ledger/events"
+  // Legacy "/v1/*" -> "/api/*" (matches Worker normalizePath shim)(KEEP /v1 so the backend routes match)
+  if (p.startsWith("/v1/")) return `/api${p}`; // "/v1/ledger/events" -> "/api/ledger/events"
   if (p === "/v1") return "/api";
 
   return p;
