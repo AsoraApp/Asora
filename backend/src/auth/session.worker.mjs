@@ -1,7 +1,8 @@
 // backend/src/auth/session.worker.mjs
-// U10/U13: Session resolution layer.
+// U10/U13/U16: Session resolution layer.
 // - Primary: Authorization: Bearer <signed token>
-// - Transitional (deprecated): dev_token query param compatibility bridge
+// - Transitional (deprecated): dev_token compatibility bridge
+// - U16 FIX: Also accept Authorization: Bearer tenant:<tenantId> as dev_token compat
 //
 // FAIL-CLOSED:
 // - No anonymous access.
@@ -31,6 +32,15 @@ function getDevTokenFromUrl(url) {
   } catch {
     return null;
   }
+}
+
+// Fail-closed dev token shape gate.
+// Current known dev token format used in your environment: "tenant:<tenantId>"
+function isDevTokenLike(v) {
+  if (!v || typeof v !== "string") return false;
+  const s = v.trim();
+  // tenantId: allow alnum plus a few safe delimiters (no spaces)
+  return /^tenant:[A-Za-z0-9._-]+$/.test(s);
 }
 
 function sanitizeSession(session) {
@@ -75,6 +85,32 @@ export async function resolveSessionFromHeaders(request, env) {
   // 1) Primary: Bearer token
   const bearer = getBearerToken(request.headers);
   if (bearer) {
+    // U16 FIX: If the Bearer value is actually a dev token (tenant:<id>),
+    // treat it as the deprecated dev_token compatibility bridge.
+    if (isDevTokenLike(bearer)) {
+      const compatPayload = devTokenToSession(bearer);
+      const clean = sanitizeSession(compatPayload);
+      if (!clean) {
+        return {
+          ok: false,
+          status: 401,
+          error: "UNAUTHORIZED",
+          code: "AUTH_DEV_TOKEN_INVALID",
+          details: null,
+        };
+      }
+
+      // Mark as deprecated explicitly for observability.
+      return {
+        ok: true,
+        session: {
+          ...clean,
+          deprecated: true,
+          deprecatedReason: clean.deprecatedReason || "BEARER_DEV_TOKEN_COMPAT",
+        },
+      };
+    }
+
     const vr = await verifySessionToken(env, bearer);
     if (!vr.ok) {
       return {
