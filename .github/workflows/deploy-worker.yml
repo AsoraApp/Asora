@@ -6,7 +6,6 @@ on:
     paths:
       - "backend/**"
       - "worker/**"
-      - "wrangler.toml"
       - "wrangler.jsonc"
 
 jobs:
