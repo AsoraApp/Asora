@@ -6,24 +6,17 @@ import { getAuthMode, getBearerToken } from "@/lib/authStorage";
 import { asoraGetJson } from "@/lib/asoraFetch";
 
 /**
- * U15-2 — Auth State Indicator Upgrade (UI-only)
- *
- * - Badge always shows: DEV | BEARER | UNAUTH
- * - If BEARER exists but /api/auth/me fails:
- *    - badge remains "BEARER" but becomes "bad" severity
- *    - tooltip clarifies EXPIRED vs INVALID (best-effort classification)
- * - No polling; one probe on mount + refresh on token changes.
+ * U15-2 + U15-4
+ * - Auth indicator (DEV | BEARER | UNAUTH) w/ severity for invalid/expired Bearer
+ * - Adds Audit nav entry
+ * - No polling; one probe on mount + manual recheck + token-change refresh
  */
 
 function classifyBearerFailure(code) {
   const c = String(code || "").toUpperCase();
   if (!c) return "INVALID";
-
-  // Best-effort classification without inventing backend codes.
   if (c.includes("EXPIRED") || c.includes("EXP")) return "EXPIRED";
   if (c.includes("INVALID") || c.includes("SIGN") || c.includes("HMAC") || c.includes("BAD")) return "INVALID";
-
-  // Default: invalid/unknown.
   return "INVALID";
 }
 
@@ -37,18 +30,13 @@ function nowIso() {
 
 export default function AdminHeader() {
   const [mode, setMode] = useState("UNAUTH");
-
-  // `/api/auth/me` probe result (single-shot, no polling)
   const [me, setMe] = useState(null);
 
-  // Auth health is independent from mode:
-  // - mode is what the operator has stored (DEV/BEARER/UNAUTH)
-  // - health is what the server says right now
   const [health, setHealth] = useState({
     ok: false,
     checkedAtUtc: null,
     code: null,
-    reason: null, // e.g., "BEARER_EXPIRED" | "BEARER_INVALID"
+    reason: null, // BEARER_EXPIRED | BEARER_INVALID | null
   });
 
   const badgeText = useMemo(() => {
@@ -58,10 +46,7 @@ export default function AdminHeader() {
   }, [mode]);
 
   const badgeClass = useMemo(() => {
-    // When bearer is present but server rejects, show severe "bad" styling.
-    if (mode === "BEARER" && health.ok !== true) {
-      return "badge bad";
-    }
+    if (mode === "BEARER" && health.ok !== true) return "badge bad";
     if (mode === "BEARER") return "badge bearer";
     if (mode === "DEV") return "badge dev";
     return "badge unauth";
@@ -74,8 +59,6 @@ export default function AdminHeader() {
         ? "DEV auth (deprecated bridge) accepted."
         : `DEV auth present but rejected (${health.code || "AUTH_REQUIRED"}).`;
     }
-
-    // BEARER mode
     if (health.ok) return "Bearer token accepted.";
     if (health.reason === "BEARER_EXPIRED") return "Bearer token present but expired.";
     if (health.reason === "BEARER_INVALID") return "Bearer token present but invalid.";
@@ -83,7 +66,6 @@ export default function AdminHeader() {
   }, [mode, health.ok, health.code, health.reason]);
 
   async function probeAuthOnce() {
-    // Always recompute mode from storage before probing.
     let nextMode = "UNAUTH";
     try {
       nextMode = getAuthMode();
@@ -92,7 +74,6 @@ export default function AdminHeader() {
     }
     setMode(nextMode);
 
-    // If UNAUTH, do not probe.
     if (nextMode === "UNAUTH") {
       setMe(null);
       setHealth({ ok: false, checkedAtUtc: nowIso(), code: "AUTH_REQUIRED", reason: null });
@@ -103,8 +84,6 @@ export default function AdminHeader() {
       const r = await asoraGetJson("/api/auth/me");
       setMe(r || null);
       setHealth({ ok: true, checkedAtUtc: nowIso(), code: null, reason: null });
-
-      // Mode remains whatever storage says (Bearer supersedes dev_token via storage rules).
       try {
         setMode(getAuthMode());
       } catch {
@@ -134,7 +113,6 @@ export default function AdminHeader() {
         reason,
       });
 
-      // Keep mode aligned with storage after failures, too.
       try {
         setMode(getAuthMode());
       } catch {
@@ -144,26 +122,17 @@ export default function AdminHeader() {
   }
 
   useEffect(() => {
-    // Initial probe (single-shot).
     probeAuthOnce();
 
-    // Refresh on token changes:
-    // - cross-tab: "storage"
-    // - same-tab: custom event (optional for immediate UI refresh)
     const onStorage = (ev) => {
-      // Any auth storage change should re-evaluate mode and re-probe.
       if (!ev || !ev.key) {
         probeAuthOnce();
         return;
       }
-      if (String(ev.key).startsWith("asora_auth:")) {
-        probeAuthOnce();
-      }
+      if (String(ev.key).startsWith("asora_auth:")) probeAuthOnce();
     };
 
-    const onAuthChanged = () => {
-      probeAuthOnce();
-    };
+    const onAuthChanged = () => probeAuthOnce();
 
     try {
       window.addEventListener("storage", onStorage);
@@ -194,6 +163,9 @@ export default function AdminHeader() {
           <nav className="row" style={{ gap: 12 }}>
             <Link className="muted" href="/auth">
               Auth
+            </Link>
+            <Link className="muted" href="/audit">
+              Audit
             </Link>
           </nav>
         </div>
