@@ -6,7 +6,7 @@ import { emitAudit } from "../observability/audit.worker.mjs";
 import { evaluateAlertsOnce } from "../domain/alerts/evaluate.mjs";
 
 import { validateLedgerEventWriteInput, validateStoredLedgerEventShape } from "../domain/ledgerEvent.schema.mjs";
-import { computeLedgerEventId, computeNextLedgerSequence } from "../domain/ledgerEvent.identity.mjs";
+import { computeNextLedgerSequence } from "../domain/ledgerEvent.identity.mjs";
 
 const KNOWN_AUTH_LEVELS = new Set(["user", "service", "system", "dev"]);
 const LEDGER_WRITE_ALLOWED = new Set(["service", "system", "dev"]);
@@ -100,6 +100,38 @@ async function safeSave(env, tenantId, name, value) {
   }
 }
 
+/**
+ * U18: Canonical event_id generation (deterministic, unique per tenant ledger)
+ *
+ * Constraints satisfied:
+ * - No randomness
+ * - No timers / setTimeout / polling
+ * - No global mutable state
+ * - Unique across POSTs because sequence is monotonic within tenant ledger
+ *
+ * Format:
+ *   le_<sequence-hex-padded>
+ * Example:
+ *   sequence=1  => le_00000001
+ *   sequence=12 => le_0000000c
+ */
+function computeCanonicalLedgerEventIdFromSequence(sequence) {
+  const n = Number(sequence);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const hex = n.toString(16).padStart(8, "0");
+  return `le_${hex}`;
+}
+
+function hasEventIdCollision(rows, event_id) {
+  if (!event_id) return false;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    if (r.event_id === event_id || r.ledgerEventId === event_id) return true;
+  }
+  return false;
+}
+
 export async function writeLedgerEventFromJson(ctx, input, baseHeaders, cfctx, env) {
   const denial = enforceLedgerWriteAuthorizationOrReturn(ctx, baseHeaders, env, cfctx);
   if (denial) return denial;
@@ -109,6 +141,7 @@ export async function writeLedgerEventFromJson(ctx, input, baseHeaders, cfctx, e
   }
 
   // U16: Canonical input validation (fail-closed, shape-frozen)
+  // U18: Any client-supplied identity is ignored by construction: event_id is server-stamped below.
   const v = validateLedgerEventWriteInput(input);
   if (!v.ok) {
     try {
@@ -189,11 +222,61 @@ export async function writeLedgerEventFromJson(ctx, input, baseHeaders, cfctx, e
   // U16: deterministic tenant ordering
   const sequence = computeNextLedgerSequence(rows);
 
-  // U16: canonical event identity
-  const event_id = computeLedgerEventId(ctx, eventCore);
+  // U18: canonical, unique server-stamped identity derived from monotonic sequence.
+  const event_id = computeCanonicalLedgerEventIdFromSequence(sequence);
+  if (!event_id) {
+    try {
+      emitAudit(
+        ctx,
+        {
+          eventCategory: "SYSTEM",
+          eventType: "VALIDATION_FAILED",
+          objectType: "ledger_event",
+          objectId: null,
+          decision: "DENY",
+          reasonCode: "EVENT_ID_GENERATION_FAILED",
+          factsSnapshot: { sequence },
+        },
+        env,
+        cfctx
+      );
+    } catch {
+      // swallow
+    }
+    return json(500, { error: "INTERNAL_ERROR", code: "EVENT_ID_GENERATION_FAILED", details: { sequence } }, baseHeaders);
+  }
+
+  // U18: collision protection (deterministic fail-closed).
+  // A collision here indicates ledger corruption or a prior non-canonical writer.
+  if (hasEventIdCollision(rows, event_id)) {
+    try {
+      emitAudit(
+        ctx,
+        {
+          eventCategory: "SECURITY",
+          eventType: "VALIDATION_FAILED",
+          objectType: "ledger_event",
+          objectId: event_id,
+          decision: "DENY",
+          reasonCode: "EVENT_ID_COLLISION",
+          factsSnapshot: { event_id, sequence },
+        },
+        env,
+        cfctx
+      );
+    } catch {
+      // swallow
+    }
+    return json(
+      409,
+      { error: "CONFLICT", code: "EVENT_ID_COLLISION", details: { event_id, sequence } },
+      baseHeaders
+    );
+  }
 
   // U16: canonical stored shape (frozen)
   // Compatibility: keep ledgerEventId alias for existing readers.
+  // U18 invariant: ledgerEventId === event_id
   const event = {
     event_id,
     ledgerEventId: event_id,
