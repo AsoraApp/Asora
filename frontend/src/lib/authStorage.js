@@ -1,10 +1,13 @@
 const KEY_BEARER = "asora_auth:bearer";
 const KEY_DEV = "asora_auth:dev_token";
 
-/**
- * Bearer supersedes dev_token.
- * UI must fail-closed; these helpers do not validate, only store/read.
- */
+function emitAuthChanged() {
+  try {
+    window.dispatchEvent(new Event("asora:auth-changed"));
+  } catch {
+    // no-op
+  }
+}
 
 export function getBearerToken() {
   try {
@@ -17,14 +20,16 @@ export function getBearerToken() {
 
 export function setBearerToken(token) {
   const t = String(token || "").trim();
-  if (!t) {
-    clearBearerToken();
-    return;
-  }
   try {
+    if (!t) {
+      localStorage.removeItem(KEY_BEARER);
+      emitAuthChanged();
+      return;
+    }
     localStorage.setItem(KEY_BEARER, t);
-    // Supersedes dev_token.
+    // Bearer supersedes dev_token
     localStorage.removeItem(KEY_DEV);
+    emitAuthChanged();
   } catch {
     // fail-closed: no-op
   }
@@ -33,6 +38,7 @@ export function setBearerToken(token) {
 export function clearBearerToken() {
   try {
     localStorage.removeItem(KEY_BEARER);
+    emitAuthChanged();
   } catch {
     // no-op
   }
@@ -57,13 +63,16 @@ export function setDevToken(devToken) {
     const bearer = getBearerToken();
     if (bearer) {
       localStorage.removeItem(KEY_DEV);
+      emitAuthChanged();
       return;
     }
     if (!t) {
       localStorage.removeItem(KEY_DEV);
+      emitAuthChanged();
       return;
     }
     localStorage.setItem(KEY_DEV, t);
+    emitAuthChanged();
   } catch {
     // no-op
   }
@@ -72,6 +81,7 @@ export function setDevToken(devToken) {
 export function clearDevToken() {
   try {
     localStorage.removeItem(KEY_DEV);
+    emitAuthChanged();
   } catch {
     // no-op
   }
