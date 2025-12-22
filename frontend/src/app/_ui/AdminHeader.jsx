@@ -2,65 +2,186 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { getAuthMode } from "@/lib/authStorage";
+import { getAuthMode, getBearerToken } from "@/lib/authStorage";
 import { asoraGetJson } from "@/lib/asoraFetch";
+
+/**
+ * U15-2 — Auth State Indicator Upgrade (UI-only)
+ *
+ * - Badge always shows: DEV | BEARER | UNAUTH
+ * - If BEARER exists but /api/auth/me fails:
+ *    - badge remains "BEARER" but becomes "bad" severity
+ *    - tooltip clarifies EXPIRED vs INVALID (best-effort classification)
+ * - No polling; one probe on mount + refresh on token changes.
+ */
+
+function classifyBearerFailure(code) {
+  const c = String(code || "").toUpperCase();
+  if (!c) return "INVALID";
+
+  // Best-effort classification without inventing backend codes.
+  if (c.includes("EXPIRED") || c.includes("EXP")) return "EXPIRED";
+  if (c.includes("INVALID") || c.includes("SIGN") || c.includes("HMAC") || c.includes("BAD")) return "INVALID";
+
+  // Default: invalid/unknown.
+  return "INVALID";
+}
+
+function nowIso() {
+  try {
+    return new Date().toISOString();
+  } catch {
+    return null;
+  }
+}
 
 export default function AdminHeader() {
   const [mode, setMode] = useState("UNAUTH");
+
+  // `/api/auth/me` probe result (single-shot, no polling)
   const [me, setMe] = useState(null);
-  const [meStatus, setMeStatus] = useState({ ok: true, code: null });
 
-  useEffect(() => {
-    // Deterministic: read localStorage once on mount.
-    try {
-      setMode(getAuthMode());
-    } catch {
-      setMode("UNAUTH");
-    }
-  }, []);
+  // Auth health is independent from mode:
+  // - mode is what the operator has stored (DEV/BEARER/UNAUTH)
+  // - health is what the server says right now
+  const [health, setHealth] = useState({
+    ok: false,
+    checkedAtUtc: null,
+    code: null,
+    reason: null, // e.g., "BEARER_EXPIRED" | "BEARER_INVALID"
+  });
 
-  useEffect(() => {
-    // No polling. A single best-effort probe per mount, for operator clarity.
-    let cancelled = false;
-
-    async function probe() {
-      try {
-        const r = await asoraGetJson("/api/auth/me");
-        if (cancelled) return;
-        setMe(r || null);
-        setMeStatus({ ok: true, code: null });
-
-        // If /me succeeded, mode is inferred by stored tokens.
-        try {
-          setMode(getAuthMode());
-        } catch {
-          // no-op
-        }
-      } catch (e) {
-        if (cancelled) return;
-        setMe(null);
-        setMeStatus({ ok: false, code: e?.code || "AUTH_REQUIRED" });
-
-        try {
-          setMode(getAuthMode());
-        } catch {
-          setMode("UNAUTH");
-        }
-      }
-    }
-
-    probe();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const badgeText = useMemo(() => {
+    if (mode === "DEV") return "DEV";
+    if (mode === "BEARER") return "BEARER";
+    return "UNAUTH";
+  }, [mode]);
 
   const badgeClass = useMemo(() => {
-    if (meStatus.ok !== true) return "badge bad";
+    // When bearer is present but server rejects, show severe "bad" styling.
+    if (mode === "BEARER" && health.ok !== true) {
+      return "badge bad";
+    }
     if (mode === "BEARER") return "badge bearer";
     if (mode === "DEV") return "badge dev";
     return "badge unauth";
-  }, [mode, meStatus.ok]);
+  }, [mode, health.ok]);
+
+  const badgeTitle = useMemo(() => {
+    if (mode === "UNAUTH") return "No auth token present (fail-closed).";
+    if (mode === "DEV") {
+      return health.ok
+        ? "DEV auth (deprecated bridge) accepted."
+        : `DEV auth present but rejected (${health.code || "AUTH_REQUIRED"}).`;
+    }
+
+    // BEARER mode
+    if (health.ok) return "Bearer token accepted.";
+    if (health.reason === "BEARER_EXPIRED") return "Bearer token present but expired.";
+    if (health.reason === "BEARER_INVALID") return "Bearer token present but invalid.";
+    return `Bearer token present but rejected (${health.code || "AUTH_REQUIRED"}).`;
+  }, [mode, health.ok, health.code, health.reason]);
+
+  async function probeAuthOnce() {
+    // Always recompute mode from storage before probing.
+    let nextMode = "UNAUTH";
+    try {
+      nextMode = getAuthMode();
+    } catch {
+      nextMode = "UNAUTH";
+    }
+    setMode(nextMode);
+
+    // If UNAUTH, do not probe.
+    if (nextMode === "UNAUTH") {
+      setMe(null);
+      setHealth({ ok: false, checkedAtUtc: nowIso(), code: "AUTH_REQUIRED", reason: null });
+      return;
+    }
+
+    try {
+      const r = await asoraGetJson("/api/auth/me");
+      setMe(r || null);
+      setHealth({ ok: true, checkedAtUtc: nowIso(), code: null, reason: null });
+
+      // Mode remains whatever storage says (Bearer supersedes dev_token via storage rules).
+      try {
+        setMode(getAuthMode());
+      } catch {
+        // no-op
+      }
+    } catch (e) {
+      setMe(null);
+
+      const storedBearer = (() => {
+        try {
+          return Boolean(getBearerToken());
+        } catch {
+          return false;
+        }
+      })();
+
+      let reason = null;
+      if (storedBearer) {
+        const kind = classifyBearerFailure(e?.code || e?.error);
+        reason = kind === "EXPIRED" ? "BEARER_EXPIRED" : "BEARER_INVALID";
+      }
+
+      setHealth({
+        ok: false,
+        checkedAtUtc: nowIso(),
+        code: e?.code || e?.error || "AUTH_REQUIRED",
+        reason,
+      });
+
+      // Keep mode aligned with storage after failures, too.
+      try {
+        setMode(getAuthMode());
+      } catch {
+        // no-op
+      }
+    }
+  }
+
+  useEffect(() => {
+    // Initial probe (single-shot).
+    probeAuthOnce();
+
+    // Refresh on token changes:
+    // - cross-tab: "storage"
+    // - same-tab: custom event (optional for immediate UI refresh)
+    const onStorage = (ev) => {
+      // Any auth storage change should re-evaluate mode and re-probe.
+      if (!ev || !ev.key) {
+        probeAuthOnce();
+        return;
+      }
+      if (String(ev.key).startsWith("asora_auth:")) {
+        probeAuthOnce();
+      }
+    };
+
+    const onAuthChanged = () => {
+      probeAuthOnce();
+    };
+
+    try {
+      window.addEventListener("storage", onStorage);
+      window.addEventListener("asora:auth-changed", onAuthChanged);
+    } catch {
+      // ignore
+    }
+
+    return () => {
+      try {
+        window.removeEventListener("storage", onStorage);
+        window.removeEventListener("asora:auth-changed", onAuthChanged);
+      } catch {
+        // ignore
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <header style={{ borderBottom: "1px solid #e5e7eb" }}>
@@ -78,16 +199,25 @@ export default function AdminHeader() {
         </div>
 
         <div className="row" style={{ gap: 10 }}>
-          <span className={badgeClass} title={meStatus.ok ? "Authenticated probe: OK" : `Probe failed: ${meStatus.code}`}>
-            {meStatus.ok ? mode : "UNAUTH"}
+          <span className={badgeClass} title={badgeTitle}>
+            {badgeText}
           </span>
 
           <span className="muted" style={{ fontSize: 12 }}>
-            tenant: {me?.tenantId ?? "—"}{" "}
+            tenant: {me?.tenantId ?? "—"}
             <span className="muted" style={{ marginLeft: 8 }}>
               actor: {me?.actorId ?? "—"}
             </span>
           </span>
+
+          <button
+            className="button secondary"
+            style={{ padding: "8px 10px", fontSize: 12 }}
+            onClick={() => probeAuthOnce()}
+            title="Manual one-shot probe (no polling)"
+          >
+            Recheck
+          </button>
         </div>
       </div>
     </header>
