@@ -1,17 +1,25 @@
+// web/app/_ui/AdminHeader.jsx
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useEffect, useState } from "react";
 import { getStoredDevToken } from "@/lib/asoraFetch";
 import { useDensity } from "./CompactBar.jsx";
 
 export const runtime = "edge";
 
 export default function AdminHeader({ title = "Asora Admin", subtitle = "" }) {
-  const devToken = useMemo(() => getStoredDevToken(), []);
+  // IMPORTANT:
+  // Do NOT read localStorage during render (causes hydration mismatch).
+  // Read it after mount, then update state.
+  const [devToken, setDevToken] = useState("");
   const missingToken = !devToken;
 
   const [dense, setDense] = useDensity(true);
+
+  useEffect(() => {
+    setDevToken(getStoredDevToken() || "");
+  }, []);
 
   return (
     <header style={styles.shell}>
