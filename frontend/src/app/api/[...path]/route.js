@@ -27,7 +27,7 @@ function json(status, body) {
 }
 
 function baseUrl() {
-  const v = process.env.ASORA_WORKER_BASE_URL || "";
+  const v = process.env.ASORA_WORKER_ORIGIN || "";
   return String(v).replace(/\/+$/g, "");
 }
 
