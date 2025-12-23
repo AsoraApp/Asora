@@ -1,8 +1,8 @@
 // backend/src/auth/session.worker.mjs
 // U10/U13/U16: Session resolution layer.
-// - Primary: Authorization: Bearer <signed token>
-// - Transitional (deprecated): dev_token compatibility bridge
-// - U16 FIX: Also accept Authorization: Bearer tenant:<tenantId> as dev_token compat
+// - Primary (U20): Authorization: Bearer <access token v2 typ=access>
+// - Transitional (deprecated): dev_token compatibility bridge (non-prod only)
+// - U16 FIX: Also accept Authorization: Bearer tenant:<tenantId> as dev_token compat (non-prod only)
 //
 // FAIL-CLOSED:
 // - No anonymous access.
@@ -12,7 +12,7 @@
 // - This function is async.
 // - Call signature is: resolveSessionFromHeaders(request, env)
 
-import { verifySessionToken } from "./token.worker.mjs";
+import { verifyAccessToken, verifySessionToken, isProdEnv } from "./token.worker.mjs";
 import { devTokenToSession } from "./devTokenCompat.worker.mjs";
 
 function getBearerToken(headers) {
@@ -34,12 +34,9 @@ function getDevTokenFromUrl(url) {
   }
 }
 
-// Fail-closed dev token shape gate.
-// Current known dev token format used in your environment: "tenant:<tenantId>"
 function isDevTokenLike(v) {
   if (!v || typeof v !== "string") return false;
   const s = v.trim();
-  // tenantId: allow alnum plus a few safe delimiters (no spaces)
   return /^tenant:[A-Za-z0-9._-]+$/.test(s);
 }
 
@@ -50,8 +47,6 @@ function sanitizeSession(session) {
   if (!session.actorId || typeof session.actorId !== "string") return null;
   if (!session.authLevel || typeof session.authLevel !== "string") return null;
 
-  // Stable shape expected by existing codepaths.
-  // Keep token field present for backward compatibility (non-authoritative).
   return {
     isAuthenticated: true,
     token: null,
@@ -63,102 +58,73 @@ function sanitizeSession(session) {
   };
 }
 
-/**
- * Resolve session from request headers/url, using env for cryptographic verification.
- *
- * Returns:
- *  { ok: true, session }
- *  { ok: false, status, error, code, details }
- */
 export async function resolveSessionFromHeaders(request, env) {
-  // Defensive: fail-closed if request shape is not as expected.
   if (!request || !request.headers || typeof request.url !== "string") {
-    return {
-      ok: false,
-      status: 401,
-      error: "UNAUTHORIZED",
-      code: "AUTH_REQUIRED",
-      details: null,
-    };
+    return { ok: false, status: 401, error: "UNAUTHORIZED", code: "AUTH_REQUIRED", details: null };
   }
 
-  // 1) Primary: Bearer token
+  const prod = isProdEnv(env);
+
+  // 1) Primary: Bearer access token (v2 typ=access)
   const bearer = getBearerToken(request.headers);
   if (bearer) {
-    // U16 FIX: If the Bearer value is actually a dev token (tenant:<id>),
-    // treat it as the deprecated dev_token compatibility bridge.
-    if (isDevTokenLike(bearer)) {
+    // Non-prod only: allow Bearer tenant:<id> as dev compat
+    if (!prod && isDevTokenLike(bearer)) {
       const compatPayload = devTokenToSession(bearer);
       const clean = sanitizeSession(compatPayload);
       if (!clean) {
-        return {
-          ok: false,
-          status: 401,
-          error: "UNAUTHORIZED",
-          code: "AUTH_DEV_TOKEN_INVALID",
-          details: null,
-        };
+        return { ok: false, status: 401, error: "UNAUTHORIZED", code: "AUTH_DEV_TOKEN_INVALID", details: null };
       }
-
-      // Mark as deprecated explicitly for observability.
       return {
         ok: true,
-        session: {
-          ...clean,
-          deprecated: true,
-          deprecatedReason: clean.deprecatedReason || "BEARER_DEV_TOKEN_COMPAT",
-        },
+        session: { ...clean, deprecated: true, deprecatedReason: clean.deprecatedReason || "BEARER_DEV_TOKEN_COMPAT" },
       };
     }
 
-    const vr = await verifySessionToken(env, bearer);
-    if (!vr.ok) {
-      return {
-        ok: false,
-        status: 401,
-        error: "UNAUTHORIZED",
-        code: vr.code || "AUTH_INVALID",
-        details: vr.details || null,
-      };
+    // Prefer v2 access tokens
+    const vr2 = await verifyAccessToken(env, bearer);
+    if (vr2.ok) {
+      const clean = sanitizeSession({
+        tenantId: vr2.session.tenantId,
+        actorId: vr2.session.actorId,
+        authLevel: vr2.session.authLevel,
+      });
+      if (!clean) {
+        return { ok: false, status: 403, error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null };
+      }
+      return { ok: true, session: clean };
     }
 
-    const clean = sanitizeSession(vr.session);
-    if (!clean) {
-      return {
-        ok: false,
-        status: 403,
-        error: "FORBIDDEN",
-        code: "TENANT_REQUIRED",
-        details: null,
-      };
+    // Back-compat: allow legacy v1 session tokens (non-prod only)
+    if (!prod) {
+      const vr1 = await verifySessionToken(env, bearer);
+      if (!vr1.ok) {
+        return { ok: false, status: 401, error: "UNAUTHORIZED", code: vr1.code || "AUTH_INVALID", details: vr1.details || null };
+      }
+      const clean = sanitizeSession(vr1.session);
+      if (!clean) {
+        return { ok: false, status: 403, error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null };
+      }
+      return { ok: true, session: { ...clean, deprecated: true, deprecatedReason: "LEGACY_V1_TOKEN_NONPROD" } };
     }
 
-    return { ok: true, session: clean };
+    // Prod: fail-closed
+    return { ok: false, status: 401, error: "UNAUTHORIZED", code: vr2.code || "AUTH_INVALID", details: vr2.details || null };
   }
 
-  // 2) Transitional: dev_token compatibility (deprecated; UI still relies on this)
+  // 2) Transitional dev_token (non-prod only)
   const devToken = getDevTokenFromUrl(request.url);
   if (devToken) {
+    if (prod) {
+      return { ok: false, status: 401, error: "UNAUTHORIZED", code: "AUTH_REQUIRED", details: null };
+    }
     const compatPayload = devTokenToSession(devToken);
     const clean = sanitizeSession(compatPayload);
     if (!clean) {
-      return {
-        ok: false,
-        status: 401,
-        error: "UNAUTHORIZED",
-        code: "AUTH_DEV_TOKEN_INVALID",
-        details: null,
-      };
+      return { ok: false, status: 401, error: "UNAUTHORIZED", code: "AUTH_DEV_TOKEN_INVALID", details: null };
     }
     return { ok: true, session: clean };
   }
 
-  // 3) No anonymous access
-  return {
-    ok: false,
-    status: 401,
-    error: "UNAUTHORIZED",
-    code: "AUTH_REQUIRED",
-    details: null,
-  };
+  return { ok: false, status: 401, error: "UNAUTHORIZED", code: "AUTH_REQUIRED", details: null };
 }
