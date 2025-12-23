@@ -2,10 +2,9 @@
 // U10: Transitional compatibility bridge for legacy dev_token.
 // Explicitly deprecated. No new features may depend on it.
 //
-// U13: Keep deterministic + conservative parsing.
-// - No randomness
-// - Fail-closed on ambiguity
-// - Stable session shape for sanitizeSession()
+// U20: Hard-gated. In prod, dev tokens are treated as invalid.
+// - Fail-closed in prod
+// - Deterministic parsing in non-prod
 
 export function parseDevTokenTenantId(devTokenRaw) {
   const t = String(devTokenRaw || "").trim();
@@ -16,9 +15,7 @@ export function parseDevTokenTenantId(devTokenRaw) {
   const tenantId = t.slice("tenant:".length).trim();
   if (!tenantId) return null;
 
-  // Conservative allow-list to avoid ambiguity/injection.
   if (!/^[a-zA-Z0-9._-]+$/.test(tenantId)) return null;
-
   return tenantId;
 }
 
