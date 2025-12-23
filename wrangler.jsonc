@@ -1,29 +1,65 @@
 // wrangler.jsonc
 {
-  // IMPORTANT:
-  // Set this to the EXACT Worker name shown in Cloudflare Dashboard → Workers.
-  // If this name does not match, deploy will fail or create a different Worker.
+  "$schema": "node_modules/wrangler/config-schema.json",
   "name": "asora-ui",
-
-  // Keep this current and deterministic.
-  "compatibility_date": "2025-12-21",
-
-  // REQUIRED: entrypoint to your Worker script.
   "main": "backend/src/index.worker.mjs",
-
-  // Optional but recommended if you use module syntax elsewhere.
+  "compatibility_date": "2025-12-01",
   "compatibility_flags": ["nodejs_compat"],
 
-  // Bindings (do not invent these—match your dashboard bindings)
-  "kv_namespaces": [
+  // REQUIRED: Durable Object for refresh token registry
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SESSION_REGISTRY",
+        "class_name": "SessionRegistryDO"
+      }
+    ]
+  },
+
+  // REQUIRED: DO migrations (first time adding this DO)
+  "migrations": [
     {
-      "binding": "ASORA_KV",
-      "id": "b43ccd4f49df403987410da83dbe557c"
+      "tag": "u20-session-registry-v1",
+      "new_classes": ["SessionRegistryDO"]
     }
   ],
 
-  // U13: explicit runtime environment label (reported by /__meta.env)
+  // REQUIRED: KV binding used by jsonStore.worker.mjs
+  "kv_namespaces": [
+    {
+      "binding": "ASORA_KV",
+      "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+    }
+  ],
+
+  // REQUIRED: Worker secrets (set via dashboard or wrangler secret)
+  // - AUTH_SECRET
+  // - OIDC_ENTRA_CLIENT_SECRET
+  // - OIDC_OKTA_CLIENT_SECRET
+
   "vars": {
-    "ENV": "production"
+    "ENV": "prod",
+
+    // Disable dev_token bridges in production.
+    "ALLOW_DEV_TOKEN": "false",
+
+    // Access/refresh TTLs (seconds)
+    "ACCESS_TOKEN_TTL_SEC": "600",
+    "REFRESH_TOKEN_TTL_SEC": "1209600",
+
+    // OIDC selection
+    "OIDC_DEFAULT_PROVIDER": "entra",
+
+    // Tenant claim mapping from IdP
+    "OIDC_TENANT_CLAIM": "tenantId",
+    "OIDC_DEFAULT_TENANT": "demo",
+
+    // Provider A: Microsoft Entra
+    "OIDC_ENTRA_ISSUER": "REPLACE_WITH_ENTRA_ISSUER",
+    "OIDC_ENTRA_CLIENT_ID": "REPLACE_WITH_ENTRA_CLIENT_ID",
+
+    // Provider A: Okta
+    "OIDC_OKTA_ISSUER": "REPLACE_WITH_OKTA_ISSUER",
+    "OIDC_OKTA_CLIENT_ID": "REPLACE_WITH_OKTA_CLIENT_ID"
   }
 }
