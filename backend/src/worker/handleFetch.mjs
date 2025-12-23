@@ -11,7 +11,7 @@ import { notificationsFetchRouter } from "./notifications.worker.mjs";
 
 import { loadTenantCollection } from "../storage/jsonStore.worker.mjs";
 
-const BUILD_STAMP = "u20-enterprise-auth-foundation-2025-12-23T00:40Z"; // CHANGE THIS ON EACH DEPLOY
+const BUILD_STAMP = "u20-enterprise-auth-foundation-2025-12-23T01:10Z"; // CHANGE THIS ON EACH DEPLOY
 
 // ---- CORS (UI -> Worker API) ----
 // Keep conservative; only allow known UI origins.
@@ -34,6 +34,8 @@ function withCors(request, response) {
     h.set("Vary", "Origin");
     h.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     h.set("Access-Control-Allow-Headers", "Authorization,Content-Type");
+    // NOTE: We do NOT set Allow-Credentials here. If you move to cookie auth from browser directly,
+    // you must set Allow-Credentials and cannot use "*" for origin.
 
     return new Response(response.body, { status: response.status, headers: h });
   } catch {
@@ -128,7 +130,7 @@ function classifyRequest(pathname, method) {
   return "infra";
 }
 
-// ---- rate limit code unchanged (your existing RL) ----
+// ---- rate limit (unchanged) ----
 const RL_WINDOW_SEC = 60;
 const RL_LIMITS = { infra: 120, read: 600, write: 120 };
 const __RL = new Map();
@@ -203,16 +205,102 @@ function mapExceptionToHttp(err) {
   const code = err?.code || err?.message || null;
 
   if (code === "KV_NOT_BOUND") {
-    return { status: 503, body: { error: "SERVICE_UNAVAILABLE", code: "KV_NOT_BOUND", details: null }, audit: { eventCategory: "SYSTEM", eventType: "STORAGE_UNAVAILABLE", reasonCode: "KV_NOT_BOUND" } };
+    return {
+      status: 503,
+      body: { error: "SERVICE_UNAVAILABLE", code: "KV_NOT_BOUND", details: null },
+      audit: { eventCategory: "SYSTEM", eventType: "STORAGE_UNAVAILABLE", reasonCode: "KV_NOT_BOUND" },
+    };
   }
   if (code === "TENANT_NOT_RESOLVED") {
-    return { status: 403, body: { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null }, audit: { eventCategory: "SECURITY", eventType: "TENANT_MISSING", reasonCode: "TENANT_NOT_RESOLVED" } };
+    return {
+      status: 403,
+      body: { error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null },
+      audit: { eventCategory: "SECURITY", eventType: "TENANT_MISSING", reasonCode: "TENANT_NOT_RESOLVED" },
+    };
   }
   if (code === "INVALID_COLLECTION_NAME") {
-    return { status: 500, body: { error: "INTERNAL_ERROR", code: "INVALID_COLLECTION_NAME", details: null }, audit: { eventCategory: "SYSTEM", eventType: "INTERNAL_ERROR", reasonCode: "INVALID_COLLECTION_NAME" } };
+    return {
+      status: 500,
+      body: { error: "INTERNAL_ERROR", code: "INVALID_COLLECTION_NAME", details: null },
+      audit: { eventCategory: "SYSTEM", eventType: "INTERNAL_ERROR", reasonCode: "INVALID_COLLECTION_NAME" },
+    };
   }
 
-  return { status: 500, body: { error: "INTERNAL_ERROR", code: "UNHANDLED_EXCEPTION", details: null }, audit: { eventCategory: "SYSTEM", eventType: "INTERNAL_ERROR", reasonCode: "UNHANDLED_EXCEPTION" } };
+  return {
+    status: 500,
+    body: { error: "INTERNAL_ERROR", code: "UNHANDLED_EXCEPTION", details: null },
+    audit: { eventCategory: "SYSTEM", eventType: "INTERNAL_ERROR", reasonCode: "UNHANDLED_EXCEPTION" },
+  };
+}
+
+// ---- Ledger deterministic ordering + cursor helpers (U17 semantics preserved) ----
+
+function parseOptionalInt(raw) {
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+  if (!Number.isInteger(n)) return null;
+  return n;
+}
+
+function parseOptionalString(raw) {
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim();
+  return s ? s : null;
+}
+
+function normalizeSequence(e) {
+  const n = Number(e?.sequence);
+  return Number.isInteger(n) && Number.isFinite(n) ? n : 0;
+}
+
+function normalizeEventId(e) {
+  return String(e?.event_id ?? e?.ledgerEventId ?? "").trim();
+}
+
+function compareLedgerKeysAsc(aSeq, aId, bSeq, bId) {
+  if (aSeq < bSeq) return -1;
+  if (aSeq > bSeq) return 1;
+  if (aId < bId) return -1;
+  if (aId > bId) return 1;
+  return 0;
+}
+
+function keyFromEvent(e) {
+  return { seq: normalizeSequence(e), id: normalizeEventId(e) };
+}
+
+function validateCursorPair(seq, id) {
+  if (seq === null && id === null) return { ok: true };
+  if (seq !== null && !Number.isInteger(seq)) return { ok: false, code: "INVALID_CURSOR" };
+  if (id !== null && typeof id !== "string") return { ok: false, code: "INVALID_CURSOR" };
+  return { ok: true };
+}
+
+function applyCursorFilter(rows, { beforeSeq, beforeId, afterSeq, afterId }) {
+  let out = rows;
+
+  if (beforeSeq !== null) {
+    const bId = beforeId ?? null;
+    out = out.filter((e) => {
+      const k = keyFromEvent(e);
+      if (bId === null) return k.seq < beforeSeq;
+      return compareLedgerKeysAsc(k.seq, k.id, beforeSeq, bId) === -1;
+    });
+  }
+
+  if (afterSeq !== null) {
+    const aId = afterId ?? null;
+    out = out.filter((e) => {
+      const k = keyFromEvent(e);
+      if (aId === null) return k.seq > afterSeq;
+      return compareLedgerKeysAsc(k.seq, k.id, afterSeq, aId) === 1;
+    });
+  }
+
+  return out;
 }
 
 async function route(request, env, cfctx) {
@@ -248,7 +336,11 @@ async function route(request, env, cfctx) {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
     const rl = rateLimitCheck({ classification: "infra", tenantId: null, request, cfctx });
     if (!rl.ok) return tooManyRequests(baseHeaders, { classification: "infra", limit: rl.limit, windowSec: RL_WINDOW_SEC }, rl);
-    return json(200, { ok: true, service: "asora", runtime: "cloudflare-worker", build: BUILD_STAMP, region: cfctx?.colo || null, env: env?.ENV ?? null, requestId }, baseHeaders);
+    return json(
+      200,
+      { ok: true, service: "asora", runtime: "cloudflare-worker", build: BUILD_STAMP, region: cfctx?.colo || null, env: env?.ENV ?? null, requestId },
+      baseHeaders
+    );
   }
 
   if (pathname === "/") {
@@ -258,7 +350,7 @@ async function route(request, env, cfctx) {
     return json(200, { ok: true, service: "asora", runtime: "cloudflare-worker", requestId }, baseHeaders);
   }
 
-  // OIDC entrypoints must be reachable without existing Asora auth
+  // Auth entrypoints must be reachable without existing Asora bearer auth
   if (pathname === "/api/auth/login") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
     return authLoginFetch(request, env, baseHeaders);
@@ -269,8 +361,10 @@ async function route(request, env, cfctx) {
   }
   if (pathname === "/api/auth/refresh") {
     if (method !== "POST") return methodNotAllowed(baseHeaders);
-    // refresh uses cookies, not bearer; ctx not needed yet
-    const ctx = safeCreateCtx({ requestId, session: { isAuthenticated: false, token: null, tenantId: null, actorId: null, authLevel: null } });
+    const ctx = safeCreateCtx({
+      requestId,
+      session: { isAuthenticated: false, token: null, tenantId: null, actorId: null, authLevel: null },
+    });
     return authRefreshFetch(request, ctx, env, baseHeaders);
   }
   if (pathname === "/api/auth/logout") {
@@ -290,7 +384,15 @@ async function route(request, env, cfctx) {
 
   emitAudit(
     ctx,
-    { eventCategory: "SYSTEM", eventType: "HTTP_REQUEST", objectType: "http_request", objectId: null, decision: "SYSTEM", reasonCode: "RECEIVED", factsSnapshot: { method, path: pathname, classification } },
+    {
+      eventCategory: "SYSTEM",
+      eventType: "HTTP_REQUEST",
+      objectType: "http_request",
+      objectId: null,
+      decision: "SYSTEM",
+      reasonCode: "RECEIVED",
+      factsSnapshot: { method, path: pathname, classification },
+    },
     env,
     cfctx
   );
@@ -314,7 +416,37 @@ async function route(request, env, cfctx) {
     if (denied) return denied;
   }
 
-  // Inventory reads
+  // ---- Audit read (tenant-scoped) ----
+  if (pathname === "/api/audit/events") {
+    if (method !== "GET") return methodNotAllowed(baseHeaders);
+
+    const sp = u.searchParams;
+    const rawLimit = sp.get("limit");
+    const limit = rawLimit === null ? 500 : Number(rawLimit);
+    if (!Number.isInteger(limit) || limit <= 0 || limit > 2000) {
+      return json(400, { error: "BAD_REQUEST", code: "INVALID_LIMIT", details: { limit: rawLimit } }, baseHeaders);
+    }
+
+    const all = (await loadTenantCollection(env, ctx.tenantId, "audit_events", [])) || [];
+    const rows = Array.isArray(all) ? all.slice() : [];
+
+    // Newest first (deterministic tie-breaker)
+    rows.sort((a, b) => {
+      const at = String(a?.createdAtUtc ?? "");
+      const bt = String(b?.createdAtUtc ?? "");
+      if (at === bt) {
+        const aid = String(a?.auditEventId ?? "");
+        const bid = String(b?.auditEventId ?? "");
+        return aid < bid ? -1 : aid > bid ? 1 : 0;
+      }
+      return at < bt ? 1 : -1;
+    });
+
+    const page = rows.slice(0, limit);
+    return json(200, { events: page, page: { limit, returned: page.length } }, baseHeaders);
+  }
+
+  // ---- Inventory reads ----
   if (pathname === "/api/inventory/items") {
     if (method !== "GET") return methodNotAllowed(baseHeaders);
     const items = await loadTenantCollection(env, ctx.tenantId, "items.json", []);
@@ -345,9 +477,219 @@ async function route(request, env, cfctx) {
     return json(200, { vendors: Array.isArray(vendors) ? vendors : [] }, baseHeaders);
   }
 
-  // Ledger routes (unchanged below here)...
-  // (Keep your existing /api/ledger/events GET/POST implementation as-is; omitted here only because you already have it in your current file.)
-  // IMPORTANT: do not change ledger semantics in U20.
+  // ---- Ledger events (U17 semantics preserved) ----
+  if (pathname === "/api/ledger/events") {
+    if (method === "GET") {
+      const sp = u.searchParams;
+
+      const rawLimit = sp.get("limit");
+      const limit = rawLimit === null ? 500 : Number(rawLimit);
+      if (!Number.isInteger(limit) || limit <= 0 || limit > 2000) {
+        return json(400, { error: "BAD_REQUEST", code: "INVALID_LIMIT", details: { limit: rawLimit } }, baseHeaders);
+      }
+
+      const order = (sp.get("order") || "desc").toLowerCase();
+      if (order !== "asc" && order !== "desc") {
+        return json(400, { error: "BAD_REQUEST", code: "INVALID_ORDER", details: { order } }, baseHeaders);
+      }
+
+      // U17 deterministic pagination inputs
+      const beforeSeq = parseOptionalInt(sp.get("before_seq"));
+      const afterSeq = parseOptionalInt(sp.get("after_seq"));
+      const beforeEventId = parseOptionalString(sp.get("before_event_id"));
+      const afterEventId = parseOptionalString(sp.get("after_event_id"));
+
+      // Legacy time filters (back-compat) — filters only, never ordering keys.
+      const before = sp.get("before");
+      const after = sp.get("after");
+
+      // Disallow contradictory cursor directions (deterministic).
+      const hasBeforeCursor = beforeSeq !== null || beforeEventId !== null;
+      const hasAfterCursor = afterSeq !== null || afterEventId !== null;
+      if (hasBeforeCursor && hasAfterCursor) {
+        return json(
+          400,
+          { error: "BAD_REQUEST", code: "BEFORE_AND_AFTER_CURSOR", details: { before_seq: beforeSeq, after_seq: afterSeq } },
+          baseHeaders
+        );
+      }
+
+      if (before && after) {
+        return json(400, { error: "BAD_REQUEST", code: "BEFORE_AND_AFTER", details: null }, baseHeaders);
+      }
+
+      const cursorBeforeOk = validateCursorPair(beforeSeq, beforeEventId);
+      if (!cursorBeforeOk.ok) {
+        return json(
+          400,
+          {
+            error: "BAD_REQUEST",
+            code: "INVALID_CURSOR",
+            details: { before_seq: sp.get("before_seq"), before_event_id: sp.get("before_event_id") },
+          },
+          baseHeaders
+        );
+      }
+      const cursorAfterOk = validateCursorPair(afterSeq, afterEventId);
+      if (!cursorAfterOk.ok) {
+        return json(
+          400,
+          { error: "BAD_REQUEST", code: "INVALID_CURSOR", details: { after_seq: sp.get("after_seq"), after_event_id: sp.get("after_event_id") } },
+          baseHeaders
+        );
+      }
+
+      const beforeTs = before ? Date.parse(before) : null;
+      const afterTs = after ? Date.parse(after) : null;
+      if ((before && !Number.isFinite(beforeTs)) || (after && !Number.isFinite(afterTs))) {
+        return json(400, { error: "BAD_REQUEST", code: "INVALID_TIMESTAMP", details: { before, after } }, baseHeaders);
+      }
+
+      const itemId = sp.get("itemId");
+
+      const all = (await loadTenantCollection(env, ctx.tenantId, "ledger_events", [])) || [];
+      let rows = Array.isArray(all) ? all.slice() : [];
+
+      // Optional item filter
+      if (itemId) rows = rows.filter((e) => e?.itemId === itemId);
+
+      // Legacy timestamp filters (filters only)
+      if (beforeTs !== null) rows = rows.filter((e) => Date.parse(e?.createdAtUtc) < beforeTs);
+      if (afterTs !== null) rows = rows.filter((e) => Date.parse(e?.createdAtUtc) > afterTs);
+
+      // U17 cursor filters (deterministic keys)
+      rows = applyCursorFilter(rows, {
+        beforeSeq: beforeSeq !== null ? beforeSeq : null,
+        beforeId: beforeEventId,
+        afterSeq: afterSeq !== null ? afterSeq : null,
+        afterId: afterEventId,
+      });
+
+      // U17 deterministic sort by (sequence, event_id). No createdAtUtc ordering dependency.
+      rows.sort((a, b) => {
+        const ak = keyFromEvent(a);
+        const bk = keyFromEvent(b);
+        return compareLedgerKeysAsc(ak.seq, ak.id, bk.seq, bk.id);
+      });
+
+      if (order === "desc") rows.reverse();
+
+      const page = rows.slice(0, limit);
+      const last = page[page.length - 1] || null;
+
+      const lastKey = last ? keyFromEvent(last) : null;
+
+      const nextBeforeSeq = order === "desc" && lastKey ? lastKey.seq : null;
+      const nextBeforeEventId = order === "desc" && lastKey ? lastKey.id : null;
+      const nextAfterSeq = order === "asc" && lastKey ? lastKey.seq : null;
+      const nextAfterEventId = order === "asc" && lastKey ? lastKey.id : null;
+
+      emitAudit(
+        ctx,
+        {
+          eventCategory: "SYSTEM",
+          eventType: "LEDGER_READ",
+          objectType: "ledger_events",
+          objectId: "/api/ledger/events",
+          decision: "SYSTEM",
+          reasonCode: "SERVED",
+          factsSnapshot: {
+            method,
+            path: pathname,
+            classification,
+            tenantId: ctx?.tenantId ?? null,
+            limit,
+            order,
+            itemId: itemId || null,
+            // legacy filters
+            before: before || null,
+            after: after || null,
+            // deterministic cursor inputs
+            before_seq: beforeSeq,
+            before_event_id: beforeEventId,
+            after_seq: afterSeq,
+            after_event_id: afterEventId,
+            // deterministic cursor outputs
+            nextBeforeSeq,
+            nextBeforeEventId,
+            nextAfterSeq,
+            nextAfterEventId,
+            returned: page.length,
+            lastSeq: lastKey ? lastKey.seq : null,
+            lastEventId: lastKey ? lastKey.id : null,
+          },
+        },
+        env,
+        cfctx
+      );
+
+      return json(
+        200,
+        {
+          events: page,
+          page: {
+            limit,
+            order,
+            // legacy filters (back-compat)
+            before: before || null,
+            after: after || null,
+            itemId,
+            returned: page.length,
+            // U17 deterministic pagination outputs
+            nextBeforeSeq,
+            nextBeforeEventId,
+            nextAfterSeq,
+            nextAfterEventId,
+          },
+        },
+        baseHeaders
+      );
+    }
+
+    if (method === "POST") {
+      // Preserve prior behavior: dev-only writes
+      if (ctx?.session?.authLevel !== "dev") {
+        emitAudit(
+          ctx,
+          {
+            eventCategory: "SECURITY",
+            eventType: "AUTHZ_DENIED",
+            objectType: "ledger_write",
+            objectId: "/api/ledger/events",
+            decision: "DENY",
+            reasonCode: "AUTHZ_DENIED",
+            factsSnapshot: { authLevel: ctx?.session?.authLevel ?? null, classification },
+          },
+          env,
+          cfctx
+        );
+        return json(403, { error: "FORBIDDEN", code: "AUTHZ_DENIED", details: null }, baseHeaders);
+      }
+
+      const body = await readJson(request);
+      if (body === "__INVALID_JSON__") {
+        emitAudit(
+          ctx,
+          {
+            eventCategory: "SECURITY",
+            eventType: "VALIDATION_FAILED",
+            objectType: "request",
+            objectId: "/api/ledger/events",
+            decision: "DENY",
+            reasonCode: "INVALID_JSON",
+            factsSnapshot: { method, path: pathname, classification },
+          },
+          env,
+          cfctx
+        );
+        return json(400, { error: "BAD_REQUEST", code: "INVALID_JSON", details: null }, baseHeaders);
+      }
+
+      return writeLedgerEventFromJson(ctx, body, baseHeaders, cfctx, env);
+    }
+
+    return methodNotAllowed(baseHeaders);
+  }
 
   // Alerts / notifications routers
   {
@@ -380,7 +722,15 @@ export async function handleFetch(request, env, cfctx) {
 
     emitAudit(
       ctx,
-      { eventCategory: mapped.audit.eventCategory, eventType: mapped.audit.eventType, objectType: "exception", objectId: null, decision: "DENY", reasonCode: mapped.audit.reasonCode, factsSnapshot: { message: String(err?.message || ""), code: String(err?.code || "") } },
+      {
+        eventCategory: mapped.audit.eventCategory,
+        eventType: mapped.audit.eventType,
+        objectType: "exception",
+        objectId: null,
+        decision: "DENY",
+        reasonCode: mapped.audit.reasonCode,
+        factsSnapshot: { message: String(err?.message || ""), code: String(err?.code || "") },
+      },
       env,
       cfctx
     );
