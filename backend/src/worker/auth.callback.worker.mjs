@@ -1,49 +1,22 @@
 // backend/src/worker/auth.callback.worker.mjs
-import { resolveTenantIdpConfig } from "../auth/tenantIdpConfig.worker.mjs";
+import { issueBootstrapCookie } from "../auth/bootstrapCookie.worker.mjs";
 
 export async function authCallbackFetch(request, env) {
-  const url = new URL(request.url);
-  const code = url.searchParams.get("code");
-  const state = url.searchParams.get("state");
+  const u = new URL(request.url);
+  const encoded = u.searchParams.get("identity");
+  if (!encoded) return new Response("Missing identity", { status: 400 });
 
-  if (!code || !state) {
-    return new Response("Invalid OIDC callback", { status: 400 });
-  }
+  const identity = JSON.parse(atob(encoded));
+  const cookie = issueBootstrapCookie(identity, env);
 
-  const cookies = request.headers.get("Cookie") || "";
-  const verifier = cookies.match(/pkce_verifier=([^;]+)/)?.[1];
-  const storedState = cookies.match(/oidc_state=([^;]+)/)?.[1];
+  const h = new Headers();
+  h.append("Set-Cookie", cookie);
 
-  if (!verifier || state !== storedState) {
-    return new Response("OIDC state mismatch", { status: 403 });
-  }
-
-  const { issuer, clientId, clientSecret, redirectUri } =
-    resolveTenantIdpConfig(request, env);
-
-  const tokenRes = await fetch(`${issuer}/token`, {
-    method: "POST",
+  return new Response(null, {
+    status: 302,
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
+      Location: "/auth/callback",
+      ...Object.fromEntries(h),
     },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: redirectUri,
-      client_id: clientId,
-      client_secret: clientSecret,
-      code_verifier: verifier,
-    }),
-  });
-
-  if (!tokenRes.ok) {
-    return new Response("OIDC token exchange failed", { status: 502 });
-  }
-
-  const tokenJson = await tokenRes.json();
-
-  return new Response(JSON.stringify(tokenJson), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
   });
 }
