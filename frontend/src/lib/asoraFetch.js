@@ -1,23 +1,8 @@
 // frontend/src/lib/asoraFetch.js
-// U20: Same-origin /api helper with:
-// - Authorization: Bearer <accessToken> (memory only)
-// - Auto-refresh via POST /api/auth/refresh when missing/expired
-// - Refresh requires X-Asora-Tenant (fail-closed) until U20-B improves it
-//
-// NOTE: dev_token compatibility remains for non-prod workflows.
 
-import { getAccessToken, setAccessToken, clearAccessToken, getDevToken } from "./authStorage";
+import { getBearerToken, setBearerToken, clearBearerToken } from "./authStorage";
 
 const SESSION_DENIAL_KEY = "asora_session:denial_v1";
-
-function withDevToken(url) {
-  const dev = getDevToken();
-  if (!dev) return url;
-
-  const u = new URL(url, window.location.origin);
-  u.searchParams.set("dev_token", dev);
-  return u.toString();
-}
 
 function nowIso() {
   try {
@@ -44,7 +29,6 @@ function emitSessionDenied(payload) {
     path: payload?.path ?? null,
     requestId: payload?.requestId ?? null,
   };
-
   safeWriteSessionDenial(p);
 
   try {
@@ -54,76 +38,62 @@ function emitSessionDenied(payload) {
   }
 }
 
-export function readLastSessionDenial() {
+async function refreshAccessToken() {
+  const res = await fetch("/api/auth/refresh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    // cookies are same-origin; browser includes them automatically
+    body: JSON.stringify({}),
+  });
+
+  const text = await res.text();
+  let body = null;
   try {
-    const raw = sessionStorage.getItem(SESSION_DENIAL_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : null;
+    body = text ? JSON.parse(text) : null;
   } catch {
-    return null;
+    body = null;
   }
+
+  if (!res.ok || !body?.ok || !body?.accessToken) {
+    clearBearerToken();
+    return false;
+  }
+
+  setBearerToken(body.accessToken);
+  return true;
 }
 
-function getHeaders(extra) {
-  const h = new Headers(extra || {});
-  const bearer = getAccessToken();
+function getHeaders() {
+  const h = new Headers();
+  const bearer = getBearerToken();
   if (bearer) h.set("Authorization", `Bearer ${bearer}`);
   h.set("Accept", "application/json");
   return h;
 }
 
-async function safeJson(res) {
-  const text = await res.text();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
+export async function asoraGetJson(path) {
+  const doFetch = async () => {
+    const res = await fetch(path, { method: "GET", headers: getHeaders(), cache: "no-store" });
+    const requestId = res.headers.get("X-Request-Id") || null;
 
-async function refreshAccessToken(tenantHint) {
-  const h = new Headers();
-  h.set("Content-Type", "application/json");
-  if (tenantHint) h.set("X-Asora-Tenant", String(tenantHint));
-
-  const res = await fetch("/api/auth/refresh", { method: "POST", headers: h, cache: "no-store" });
-  const requestId = res.headers.get("X-Request-Id") || null;
-  const body = await safeJson(res);
-
-  if (!res.ok) {
-    clearAccessToken();
-    emitSessionDenied({ status: res.status, code: body?.code || body?.error || "REFRESH_FAILED", path: "/api/auth/refresh", requestId });
-    throw { ok: false, status: res.status, code: body?.code || "REFRESH_FAILED", error: body?.error || "UNAUTHORIZED", details: body?.details ?? null, requestId };
-  }
-
-  const token = body?.accessToken ? String(body.accessToken) : "";
-  if (!token) throw { ok: false, status: 500, code: "REFRESH_NO_TOKEN", error: "INTERNAL_ERROR", details: null, requestId };
-
-  setAccessToken(token);
-  return body;
-}
-
-export async function asoraGetJson(path, opts = {}) {
-  const url = typeof window !== "undefined" ? withDevToken(path) : path;
-
-  // First attempt
-  let res = await fetch(url, { method: "GET", headers: getHeaders(opts.headers), cache: "no-store" });
-  let requestId = res.headers.get("X-Request-Id") || null;
-  let body = await safeJson(res);
-
-  // If unauthorized and we have refresh cookie, attempt refresh then retry once.
-  if ((res.status === 401 || res.status === 403) && !getDevToken()) {
+    const text = await res.text();
+    let body = null;
     try {
-      // tenant hint can come from last-known value if caller provides it; otherwise refresh will fail-closed until U20-B.
-      await refreshAccessToken(opts.tenantId || "");
-      res = await fetch(url, { method: "GET", headers: getHeaders(opts.headers), cache: "no-store" });
-      requestId = res.headers.get("X-Request-Id") || null;
-      body = await safeJson(res);
-    } catch (e) {
-      // refresh already emitted sessionDenied
-      throw e;
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = null;
+    }
+
+    return { res, body, requestId };
+  };
+
+  let { res, body, requestId } = await doFetch();
+
+  // If unauthorized, attempt one refresh rotation then retry once.
+  if (res.status === 401 || res.status === 403) {
+    const ok = await refreshAccessToken();
+    if (ok) {
+      ({ res, body, requestId } = await doFetch());
     }
   }
 
