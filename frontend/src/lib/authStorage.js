@@ -1,5 +1,6 @@
+// frontend/src/lib/authStorage.js
+
 const KEY_BEARER = "asora_auth:bearer";
-const KEY_DEV = "asora_auth:dev_token";
 
 function emitAuthChanged() {
   try {
@@ -27,11 +28,9 @@ export function setBearerToken(token) {
       return;
     }
     localStorage.setItem(KEY_BEARER, t);
-    // Bearer supersedes dev_token
-    localStorage.removeItem(KEY_DEV);
     emitAuthChanged();
   } catch {
-    // fail-closed: no-op
+    // no-op
   }
 }
 
@@ -44,53 +43,8 @@ export function clearBearerToken() {
   }
 }
 
-export function getDevToken() {
-  try {
-    // Only meaningful if Bearer does not exist.
-    const bearer = getBearerToken();
-    if (bearer) return "";
-    const v = localStorage.getItem(KEY_DEV);
-    return v ? String(v) : "";
-  } catch {
-    return "";
-  }
-}
-
-export function setDevToken(devToken) {
-  const t = String(devToken || "").trim();
-  try {
-    // Only store if Bearer absent.
-    const bearer = getBearerToken();
-    if (bearer) {
-      localStorage.removeItem(KEY_DEV);
-      emitAuthChanged();
-      return;
-    }
-    if (!t) {
-      localStorage.removeItem(KEY_DEV);
-      emitAuthChanged();
-      return;
-    }
-    localStorage.setItem(KEY_DEV, t);
-    emitAuthChanged();
-  } catch {
-    // no-op
-  }
-}
-
-export function clearDevToken() {
-  try {
-    localStorage.removeItem(KEY_DEV);
-    emitAuthChanged();
-  } catch {
-    // no-op
-  }
-}
-
 export function getAuthMode() {
   const bearer = getBearerToken();
   if (bearer) return "BEARER";
-  const dev = getDevToken();
-  if (dev) return "DEV";
   return "UNAUTH";
 }

@@ -1,16 +1,11 @@
 // backend/src/auth/session.worker.mjs
-// U10/U13/U16: Session resolution layer.
+// U10/U13/U16/U20: Session resolution layer.
 // - Primary: Authorization: Bearer <signed token>
-// - Transitional (deprecated): dev_token compatibility bridge
-// - U16 FIX: Also accept Authorization: Bearer tenant:<tenantId> as dev_token compat
+// - Transitional (deprecated): dev_token compatibility bridge (U20: gated by ALLOW_DEV_TOKEN)
 //
 // FAIL-CLOSED:
 // - No anonymous access.
 // - Resolves exactly one tenantId, or returns a deterministic denial.
-//
-// IMPORTANT:
-// - This function is async.
-// - Call signature is: resolveSessionFromHeaders(request, env)
 
 import { verifySessionToken } from "./token.worker.mjs";
 import { devTokenToSession } from "./devTokenCompat.worker.mjs";
@@ -34,13 +29,16 @@ function getDevTokenFromUrl(url) {
   }
 }
 
-// Fail-closed dev token shape gate.
-// Current known dev token format used in your environment: "tenant:<tenantId>"
+// Current known dev token format: "tenant:<tenantId>"
 function isDevTokenLike(v) {
   if (!v || typeof v !== "string") return false;
   const s = v.trim();
-  // tenantId: allow alnum plus a few safe delimiters (no spaces)
   return /^tenant:[A-Za-z0-9._-]+$/.test(s);
+}
+
+function allowDevToken(env) {
+  const v = String(env?.ALLOW_DEV_TOKEN || "").trim().toLowerCase();
+  return v === "true" || v === "1" || v === "yes";
 }
 
 function sanitizeSession(session) {
@@ -50,8 +48,6 @@ function sanitizeSession(session) {
   if (!session.actorId || typeof session.actorId !== "string") return null;
   if (!session.authLevel || typeof session.authLevel !== "string") return null;
 
-  // Stable shape expected by existing codepaths.
-  // Keep token field present for backward compatibility (non-authoritative).
   return {
     isAuthenticated: true,
     token: null,
@@ -63,102 +59,50 @@ function sanitizeSession(session) {
   };
 }
 
-/**
- * Resolve session from request headers/url, using env for cryptographic verification.
- *
- * Returns:
- *  { ok: true, session }
- *  { ok: false, status, error, code, details }
- */
 export async function resolveSessionFromHeaders(request, env) {
-  // Defensive: fail-closed if request shape is not as expected.
   if (!request || !request.headers || typeof request.url !== "string") {
-    return {
-      ok: false,
-      status: 401,
-      error: "UNAUTHORIZED",
-      code: "AUTH_REQUIRED",
-      details: null,
-    };
+    return { ok: false, status: 401, error: "UNAUTHORIZED", code: "AUTH_REQUIRED", details: null };
   }
 
   // 1) Primary: Bearer token
   const bearer = getBearerToken(request.headers);
   if (bearer) {
-    // U16 FIX: If the Bearer value is actually a dev token (tenant:<id>),
-    // treat it as the deprecated dev_token compatibility bridge.
+    // Dev-token-in-bearer compatibility is now gated
     if (isDevTokenLike(bearer)) {
+      if (!allowDevToken(env)) {
+        return { ok: false, status: 401, error: "UNAUTHORIZED", code: "AUTH_DEV_TOKEN_DISABLED", details: null };
+      }
       const compatPayload = devTokenToSession(bearer);
       const clean = sanitizeSession(compatPayload);
-      if (!clean) {
-        return {
-          ok: false,
-          status: 401,
-          error: "UNAUTHORIZED",
-          code: "AUTH_DEV_TOKEN_INVALID",
-          details: null,
-        };
-      }
-
-      // Mark as deprecated explicitly for observability.
+      if (!clean) return { ok: false, status: 401, error: "UNAUTHORIZED", code: "AUTH_DEV_TOKEN_INVALID", details: null };
       return {
         ok: true,
-        session: {
-          ...clean,
-          deprecated: true,
-          deprecatedReason: clean.deprecatedReason || "BEARER_DEV_TOKEN_COMPAT",
-        },
+        session: { ...clean, deprecated: true, deprecatedReason: clean.deprecatedReason || "BEARER_DEV_TOKEN_COMPAT" },
       };
     }
 
     const vr = await verifySessionToken(env, bearer);
     if (!vr.ok) {
-      return {
-        ok: false,
-        status: 401,
-        error: "UNAUTHORIZED",
-        code: vr.code || "AUTH_INVALID",
-        details: vr.details || null,
-      };
+      return { ok: false, status: 401, error: "UNAUTHORIZED", code: vr.code || "AUTH_INVALID", details: vr.details || null };
     }
 
     const clean = sanitizeSession(vr.session);
-    if (!clean) {
-      return {
-        ok: false,
-        status: 403,
-        error: "FORBIDDEN",
-        code: "TENANT_REQUIRED",
-        details: null,
-      };
-    }
-
+    if (!clean) return { ok: false, status: 403, error: "FORBIDDEN", code: "TENANT_REQUIRED", details: null };
     return { ok: true, session: clean };
   }
 
-  // 2) Transitional: dev_token compatibility (deprecated; UI still relies on this)
+  // 2) Transitional: dev_token query param (gated)
   const devToken = getDevTokenFromUrl(request.url);
   if (devToken) {
+    if (!allowDevToken(env)) {
+      return { ok: false, status: 401, error: "UNAUTHORIZED", code: "AUTH_DEV_TOKEN_DISABLED", details: null };
+    }
     const compatPayload = devTokenToSession(devToken);
     const clean = sanitizeSession(compatPayload);
-    if (!clean) {
-      return {
-        ok: false,
-        status: 401,
-        error: "UNAUTHORIZED",
-        code: "AUTH_DEV_TOKEN_INVALID",
-        details: null,
-      };
-    }
+    if (!clean) return { ok: false, status: 401, error: "UNAUTHORIZED", code: "AUTH_DEV_TOKEN_INVALID", details: null };
     return { ok: true, session: clean };
   }
 
   // 3) No anonymous access
-  return {
-    ok: false,
-    status: 401,
-    error: "UNAUTHORIZED",
-    code: "AUTH_REQUIRED",
-    details: null,
-  };
+  return { ok: false, status: 401, error: "UNAUTHORIZED", code: "AUTH_REQUIRED", details: null };
 }
