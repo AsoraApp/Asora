@@ -1,41 +1,27 @@
+// frontend/src/app/login/page.jsx
 "use client";
 
 export const runtime = "edge";
 
+function providerUrl(provider) {
+  const u = new URL("/api/auth/login", window.location.origin);
+  u.searchParams.set("provider", provider);
+  return u.toString();
+}
+
 export default function LoginPage() {
-  function start() {
-    // Start OIDC via Worker (proxied through Pages /api)
-    window.location.href = "/api/auth/oidc/start";
-  }
-
   return (
-    <div className="container" style={{ paddingTop: 48, maxWidth: 720 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-        <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: 2 }}>ASORA</div>
-      </div>
+    <div style={{ padding: 24 }}>
+      <h1 style={{ fontSize: 28, marginBottom: 8 }}>Asora Login</h1>
+      <p style={{ opacity: 0.8, marginBottom: 16 }}>Enterprise SSO required.</p>
 
-      <div style={{ marginTop: 16, opacity: 0.85 }}>
-        Sign in to access the Asora Admin Console. Unauthorized access is blocked.
-      </div>
-
-      <div style={{ marginTop: 24 }}>
-        <button
-          onClick={start}
-          style={{
-            padding: "12px 16px",
-            borderRadius: 10,
-            border: "1px solid rgba(255,255,255,0.15)",
-            background: "rgba(255,255,255,0.06)",
-            cursor: "pointer",
-            fontWeight: 600,
-          }}
-        >
-          Continue with SSO
-        </button>
-      </div>
-
-      <div style={{ marginTop: 18, fontSize: 13, opacity: 0.7 }}>
-        If your company uses SSO, you will be redirected to your identity provider.
+      <div style={{ display: "flex", gap: 12 }}>
+        <a href="/api/auth/login?provider=entra" style={{ padding: 12, border: "1px solid #444", borderRadius: 10, textDecoration: "none" }}>
+          Continue with Microsoft (Entra)
+        </a>
+        <a href="/api/auth/login?provider=okta" style={{ padding: 12, border: "1px solid #444", borderRadius: 10, textDecoration: "none" }}>
+          Continue with Okta
+        </a>
       </div>
     </div>
   );
