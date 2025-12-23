@@ -1,6 +1,7 @@
 import "./globals.css";
 import AdminHeader from "./_ui/AdminHeader.jsx";
 import SessionBanner from "./_ui/SessionBanner.jsx";
+import AuthGate from "./_ui/AuthGate.jsx";
 
 export const metadata = {
   title: "Asora",
@@ -11,9 +12,11 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body>
-        <AdminHeader />
-        <SessionBanner />
-        <main className="container">{children}</main>
+        <AuthGate>
+          <AdminHeader />
+          <SessionBanner />
+          <main className="container">{children}</main>
+        </AuthGate>
       </body>
     </html>
   );
