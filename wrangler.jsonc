@@ -6,7 +6,6 @@
   "compatibility_date": "2025-12-01",
   "compatibility_flags": ["nodejs_compat"],
 
-  // REQUIRED: Durable Object for refresh token registry
   "durable_objects": {
     "bindings": [
       {
@@ -16,7 +15,6 @@
     ]
   },
 
-  // REQUIRED: DO migrations (first time adding this DO)
   "migrations": [
     {
       "tag": "u20-session-registry-v1",
@@ -24,41 +22,28 @@
     }
   ],
 
-  // REQUIRED: KV binding used by jsonStore.worker.mjs
   "kv_namespaces": [
     {
       "binding": "ASORA_KV",
-      "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+      "id": "b43ccd4f49df403987410da83dbe557c"
     }
   ],
 
-  // REQUIRED: Worker secrets (set via dashboard or wrangler secret)
-  // - AUTH_SECRET
-  // - OIDC_ENTRA_CLIENT_SECRET
-  // - OIDC_OKTA_CLIENT_SECRET
-
   "vars": {
     "ENV": "prod",
-
-    // Disable dev_token bridges in production.
     "ALLOW_DEV_TOKEN": "false",
 
-    // Access/refresh TTLs (seconds)
     "ACCESS_TOKEN_TTL_SEC": "600",
     "REFRESH_TOKEN_TTL_SEC": "1209600",
 
-    // OIDC selection
     "OIDC_DEFAULT_PROVIDER": "entra",
 
-    // Tenant claim mapping from IdP
     "OIDC_TENANT_CLAIM": "tenantId",
     "OIDC_DEFAULT_TENANT": "demo",
 
-    // Provider A: Microsoft Entra
     "OIDC_ENTRA_ISSUER": "REPLACE_WITH_ENTRA_ISSUER",
     "OIDC_ENTRA_CLIENT_ID": "REPLACE_WITH_ENTRA_CLIENT_ID",
 
-    // Provider A: Okta
     "OIDC_OKTA_ISSUER": "REPLACE_WITH_OKTA_ISSUER",
     "OIDC_OKTA_CLIENT_ID": "REPLACE_WITH_OKTA_CLIENT_ID"
   }
