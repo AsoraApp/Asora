@@ -1,10 +1,14 @@
 // frontend/src/lib/authStorage.js
+// U20: Single source of truth for browser-held access token (short-lived).
+// - Refresh token is HttpOnly cookie, not accessible here.
+// - Access token is stored in sessionStorage and applied to /api calls.
+// - Emits "asora:auth-changed" for deterministic UI refresh.
 
-const KEY_BEARER = "asora_auth:bearer";
+const KEY = "asora_auth:bearer_v1";
 
-function emitAuthChanged() {
+function safeDispatchAuthChanged() {
   try {
-    window.dispatchEvent(new Event("asora:auth-changed"));
+    window.dispatchEvent(new CustomEvent("asora:auth-changed", { detail: { at: Date.now() } }));
   } catch {
     // no-op
   }
@@ -12,23 +16,18 @@ function emitAuthChanged() {
 
 export function getBearerToken() {
   try {
-    const v = localStorage.getItem(KEY_BEARER);
-    return v ? String(v) : "";
+    return sessionStorage.getItem(KEY) || null;
   } catch {
-    return "";
+    return null;
   }
 }
 
 export function setBearerToken(token) {
-  const t = String(token || "").trim();
   try {
-    if (!t) {
-      localStorage.removeItem(KEY_BEARER);
-      emitAuthChanged();
-      return;
-    }
-    localStorage.setItem(KEY_BEARER, t);
-    emitAuthChanged();
+    const t = String(token || "").trim();
+    if (!t) return;
+    sessionStorage.setItem(KEY, t);
+    safeDispatchAuthChanged();
   } catch {
     // no-op
   }
@@ -36,15 +35,27 @@ export function setBearerToken(token) {
 
 export function clearBearerToken() {
   try {
-    localStorage.removeItem(KEY_BEARER);
-    emitAuthChanged();
+    sessionStorage.removeItem(KEY);
+    safeDispatchAuthChanged();
   } catch {
     // no-op
   }
 }
 
+// Back-compat aliases used in some UI code paths:
+export function setAccessToken(token) {
+  return setBearerToken(token);
+}
+export function getAccessToken() {
+  return getBearerToken();
+}
+export function clearAccessToken() {
+  return clearBearerToken();
+}
+
+// Mode indicator used by AdminHeader / SessionBanner
 export function getAuthMode() {
-  const bearer = getBearerToken();
-  if (bearer) return "BEARER";
+  const t = getBearerToken();
+  if (t) return "BEARER";
   return "UNAUTH";
 }
