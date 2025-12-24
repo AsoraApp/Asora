@@ -1,17 +1,21 @@
 // backend/src/index.worker.mjs
-import { handleFetch } from "./worker/handleFetch.mjs";
+//
+// U20: Worker entrypoint.
+// - MUST export Durable Object classes referenced by wrangler bindings.
+// - MUST export the fetch handler used by the service.
+//
+// Wrangler error being fixed:
+// "Durable Objects ... not exported in your entrypoint file: SessionRegistryDO."
 
-/**
- * ASORA — Cloudflare Worker entrypoint (Modules syntax)
- *
- * Wrangler MUST deploy this file via wrangler.jsonc "main".
- * This entrypoint is intentionally thin:
- * - no side effects
- * - no state
- * - delegates all routing to backend/src/worker/handleFetch.mjs
- */
+import { handleFetch } from "./worker/handleFetch.mjs";
+import { SessionRegistryDO } from "./auth/sessionRegistry.do.mjs";
+
+// Durable Object export (required by wrangler binding: class_name = "SessionRegistryDO")
+export { SessionRegistryDO };
+
+// Service Worker fetch export
 export default {
-  async fetch(request, env, cfctx) {
-    return handleFetch(request, env, cfctx);
+  async fetch(request, env, ctx) {
+    return handleFetch(request, env, ctx);
   },
 };

@@ -1,5 +1,4 @@
 // backend/src/worker/auth.worker.mjs
-
 import { signSessionToken, nowUtcSeconds } from "../auth/token.worker.mjs";
 import { makeSetCookie, parseCookieHeader, expireCookie } from "../auth/cookies.worker.mjs";
 import { oidcLoginFetch, oidcCallbackFetch } from "../auth/oidc.worker.mjs";
@@ -106,10 +105,11 @@ export async function authRefreshFetch(request, ctx, env, baseHeaders) {
     if (!rotated || rotated.ok !== true) {
       const h = new Headers(baseHeaders || {});
       h.append("Set-Cookie", expireCookie({ name: "__asora_rt" }));
-      return new Response(JSON.stringify({ ok: false, error: "UNAUTHORIZED", code: rotated?.code || "REFRESH_INVALID", details: rotated || null }), {
-        status: 401,
-        headers: h,
-      });
+      h.set("Content-Type", "application/json; charset=utf-8");
+      return new Response(
+        JSON.stringify({ ok: false, error: "UNAUTHORIZED", code: rotated?.code || "REFRESH_INVALID", details: rotated || null }),
+        { status: 401, headers: h }
+      );
     }
 
     const now = nowUtcSeconds();
@@ -153,7 +153,6 @@ export async function authRefreshFetch(request, ctx, env, baseHeaders) {
 
   // Case B: bootstrap cookie (one-time)
   if (bootstrap) {
-    // verify bootstrap signature using AUTH_SECRET (same encoding as oidc.worker.mjs)
     const secret = String(env?.AUTH_SECRET || "").trim();
     if (!secret) return json(500, { ok: false, error: "INTERNAL_ERROR", code: "AUTH_SECRET_MISSING", details: null }, baseHeaders);
 
@@ -165,7 +164,6 @@ export async function authRefreshFetch(request, ctx, env, baseHeaders) {
       const payloadB64 = parts[0];
       const sig = parts[1];
 
-      // decode payloadB64
       const s = String(payloadB64).replace(/-/g, "+").replace(/_/g, "/");
       const pad = (4 - (s.length % 4)) % 4;
       const padded = s + "=".repeat(pad);
@@ -174,7 +172,6 @@ export async function authRefreshFetch(request, ctx, env, baseHeaders) {
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       const body = new TextDecoder().decode(bytes);
 
-      // verify HMAC
       const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
       const sigS = String(sig).replace(/-/g, "+").replace(/_/g, "/");
       const pad2 = (4 - (sigS.length % 4)) % 4;

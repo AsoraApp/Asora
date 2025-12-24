@@ -1,5 +1,4 @@
 // frontend/src/lib/asoraFetch.js
-
 import { getBearerToken, setBearerToken, clearBearerToken } from "./authStorage";
 
 const SESSION_DENIAL_KEY = "asora_session:denial_v1";
@@ -20,6 +19,17 @@ function safeWriteSessionDenial(payload) {
   }
 }
 
+export function readLastSessionDenial() {
+  try {
+    const raw = sessionStorage.getItem(SESSION_DENIAL_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function emitSessionDenied(payload) {
   const p = {
     kind: "SESSION_DENIED",
@@ -27,7 +37,7 @@ function emitSessionDenied(payload) {
     status: payload?.status ?? null,
     code: payload?.code ?? null,
     path: payload?.path ?? null,
-    requestId: payload?.requestId ?? null,
+    requestId: payload?.requestId ?? null
   };
   safeWriteSessionDenial(p);
 
@@ -42,8 +52,7 @@ async function refreshAccessToken() {
   const res = await fetch("/api/auth/refresh", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    // cookies are same-origin; browser includes them automatically
-    body: JSON.stringify({}),
+    body: JSON.stringify({})
   });
 
   const text = await res.text();
@@ -89,7 +98,7 @@ export async function asoraGetJson(path) {
 
   let { res, body, requestId } = await doFetch();
 
-  // If unauthorized, attempt one refresh rotation then retry once.
+  // One-shot refresh + retry on auth failure
   if (res.status === 401 || res.status === 403) {
     const ok = await refreshAccessToken();
     if (ok) {
@@ -104,7 +113,7 @@ export async function asoraGetJson(path) {
       code: body?.code || body?.error || "HTTP_ERROR",
       error: body?.error || "HTTP_ERROR",
       details: body?.details ?? null,
-      requestId,
+      requestId
     };
 
     if (res.status === 401 || res.status === 403) {
