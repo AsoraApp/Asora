@@ -1,112 +1,143 @@
 // backend/src/auth/tenantIdpConfig.worker.mjs
-// U20: OIDC provider + tenant resolution (Option A: external enterprise IdP required)
 //
-// Provider-agnostic contract consumed by oidc.worker.mjs:
-// - resolveOidcConfig(env, requestUrl) -> { ok:true, provider, issuer, clientId, clientSecret, redirectUri }
-// - getTenantClaim(env) -> claim name string
-// - getDefaultTenant(env) -> fallback tenant string (only used if claim missing)
+// U20: Tenant + IdP config resolution for OIDC (provider-agnostic).
 //
-// Selection rules:
-// - provider is chosen via ?provider=entra|okta on /api/auth/login and /api/auth/callback
-// - fail-closed: any missing config -> { ok:false, code, details }
+// HARD REQUIREMENT (from build error):
+// - Must export: resolveTenantIdpConfig (named export)
+//
+// Also provides the helpers referenced in U20 summary:
+// - resolveOidcConfig()
+// - getTenantClaim()
+// - getDefaultTenant()
+//
+// Provider baseline: Entra + Okta
+// Optional third provider (if not overbuild): Auth0
+//
+// Expected env var patterns (recommended):
+//   OIDC_TENANT_CLAIM           (optional) e.g. "tid" | "tenantId" | "groups"
+//   OIDC_DEFAULT_TENANT         (optional) default tenantId when claim missing
+//
+//   OIDC_ENTRA_ISSUER
+//   OIDC_ENTRA_CLIENT_ID
+//   OIDC_ENTRA_CLIENT_SECRET
+//   OIDC_ENTRA_REDIRECT_URI
+//
+//   OIDC_OKTA_ISSUER
+//   OIDC_OKTA_CLIENT_ID
+//   OIDC_OKTA_CLIENT_SECRET
+//   OIDC_OKTA_REDIRECT_URI
+//
+//   OIDC_AUTH0_ISSUER
+//   OIDC_AUTH0_CLIENT_ID
+//   OIDC_AUTH0_CLIENT_SECRET
+//   OIDC_AUTH0_REDIRECT_URI
+//
+// Notes:
+// - Fail-closed: missing provider config => throws.
+// - We do NOT auto-discover issuer metadata here; oidc.worker.mjs handles OIDC mechanics.
 
-function safeStr(v) {
-  const s = String(v ?? "").trim();
+function requiredString(v, name) {
+  const s = (v ?? "").toString().trim();
+  if (!s) throw new Error(`OIDC config error: missing ${name}`);
+  return s;
+}
+
+function optionalString(v) {
+  const s = (v ?? "").toString().trim();
   return s || null;
 }
 
-function normalizeProvider(v) {
-  const s = String(v ?? "").trim().toLowerCase();
-  if (s === "entra" || s === "azure" || s === "azuread" || s === "microsoft") return "entra";
-  if (s === "okta") return "okta";
-  return null;
-}
-
-function parseProviderFromUrl(requestUrl) {
-  try {
-    const u = new URL(String(requestUrl || ""));
-    return normalizeProvider(u.searchParams.get("provider"));
-  } catch {
-    return null;
-  }
-}
-
-function originFromUrl(requestUrl) {
-  try {
-    const u = new URL(String(requestUrl || ""));
-    return u.origin;
-  } catch {
-    return null;
-  }
-}
-
-function must(value, code, details) {
-  if (value) return { ok: true, value };
-  return { ok: false, code, details: details || null };
-}
-
-function providerConfig(env, provider) {
-  if (provider === "entra") {
-    return {
-      provider: "entra",
-      issuer: safeStr(env?.OIDC_ENTRA_ISSUER),
-      clientId: safeStr(env?.OIDC_ENTRA_CLIENT_ID),
-      clientSecret: safeStr(env?.OIDC_ENTRA_CLIENT_SECRET),
-    };
-  }
-  if (provider === "okta") {
-    return {
-      provider: "okta",
-      issuer: safeStr(env?.OIDC_OKTA_ISSUER),
-      clientId: safeStr(env?.OIDC_OKTA_CLIENT_ID),
-      clientSecret: safeStr(env?.OIDC_OKTA_CLIENT_SECRET),
-    };
-  }
-  return null;
+function normalizeProviderKey(provider) {
+  const p = String(provider || "").toLowerCase().trim();
+  if (!p) return null;
+  // Normalize common aliases.
+  if (p === "entra" || p === "azure" || p === "azuread" || p === "microsoft" || p === "microsoftentra") return "entra";
+  if (p === "okta") return "okta";
+  if (p === "auth0" || p === "auth-0") return "auth0";
+  return p; // allow future providers explicitly configured
 }
 
 export function getTenantClaim(env) {
-  // Default: "tenantId" (Option A: enterprise IdP should emit this via claim mapping)
-  return safeStr(env?.OIDC_TENANT_CLAIM) || "tenantId";
+  return optionalString(env?.OIDC_TENANT_CLAIM) || "tid";
 }
 
 export function getDefaultTenant(env) {
-  // Default fallback ONLY if claim missing. Keep deterministic.
-  return safeStr(env?.OIDC_DEFAULT_TENANT) || "demo";
+  return optionalString(env?.OIDC_DEFAULT_TENANT) || "demo";
 }
 
-export function resolveOidcConfig(env, requestUrl) {
-  const provider = parseProviderFromUrl(requestUrl) || normalizeProvider(env?.OIDC_DEFAULT_PROVIDER) || null;
-  if (!provider) {
-    return { ok: false, code: "OIDC_PROVIDER_REQUIRED", details: { expected: ["entra", "okta"] } };
+/**
+ * Resolve the provider config for a given provider key.
+ * This is provider-agnostic and purely env-driven.
+ */
+export function resolveOidcConfig(providerKey, env) {
+  const key = normalizeProviderKey(providerKey);
+  if (!key) throw new Error("OIDC config error: provider is required");
+
+  const tenantClaim = getTenantClaim(env);
+  const defaultTenantId = getDefaultTenant(env);
+
+  if (key === "entra") {
+    return {
+      provider: "entra",
+      issuer: requiredString(env?.OIDC_ENTRA_ISSUER, "OIDC_ENTRA_ISSUER"),
+      clientId: requiredString(env?.OIDC_ENTRA_CLIENT_ID, "OIDC_ENTRA_CLIENT_ID"),
+      clientSecret: requiredString(env?.OIDC_ENTRA_CLIENT_SECRET, "OIDC_ENTRA_CLIENT_SECRET"),
+      redirectUri: requiredString(env?.OIDC_ENTRA_REDIRECT_URI, "OIDC_ENTRA_REDIRECT_URI"),
+      tenantClaim,
+      defaultTenantId,
+    };
   }
 
-  const pc = providerConfig(env, provider);
-  if (!pc) return { ok: false, code: "OIDC_PROVIDER_INVALID", details: { provider } };
+  if (key === "okta") {
+    return {
+      provider: "okta",
+      issuer: requiredString(env?.OIDC_OKTA_ISSUER, "OIDC_OKTA_ISSUER"),
+      clientId: requiredString(env?.OIDC_OKTA_CLIENT_ID, "OIDC_OKTA_CLIENT_ID"),
+      clientSecret: requiredString(env?.OIDC_OKTA_CLIENT_SECRET, "OIDC_OKTA_CLIENT_SECRET"),
+      redirectUri: requiredString(env?.OIDC_OKTA_REDIRECT_URI, "OIDC_OKTA_REDIRECT_URI"),
+      tenantClaim,
+      defaultTenantId,
+    };
+  }
 
-  const o = originFromUrl(requestUrl);
-  if (!o) return { ok: false, code: "OIDC_REQUEST_URL_INVALID", details: null };
+  if (key === "auth0") {
+    return {
+      provider: "auth0",
+      issuer: requiredString(env?.OIDC_AUTH0_ISSUER, "OIDC_AUTH0_ISSUER"),
+      clientId: requiredString(env?.OIDC_AUTH0_CLIENT_ID, "OIDC_AUTH0_CLIENT_ID"),
+      clientSecret: requiredString(env?.OIDC_AUTH0_CLIENT_SECRET, "OIDC_AUTH0_CLIENT_SECRET"),
+      redirectUri: requiredString(env?.OIDC_AUTH0_REDIRECT_URI, "OIDC_AUTH0_REDIRECT_URI"),
+      tenantClaim,
+      defaultTenantId,
+    };
+  }
 
-  // Redirect URI must be on the Worker origin because the browser is sent to Worker /api/auth/callback.
-  // Pages proxies /api/* to Worker, so redirectUri must match *public Worker origin*.
-  // In practice this should be set explicitly; but we can safely derive from request origin.
-  const redirectUri = `${o}/api/auth/callback`;
-
-  const i = must(pc.issuer, "OIDC_ISSUER_MISSING", { provider });
-  if (!i.ok) return i;
-
-  const c1 = must(pc.clientId, "OIDC_CLIENT_ID_MISSING", { provider });
-  if (!c1.ok) return c1;
-
-  const c2 = must(pc.clientSecret, "OIDC_CLIENT_SECRET_MISSING", { provider });
-  if (!c2.ok) return c2;
-
+  // Generic provider support (enterprise-first posture, but explicit env required).
+  // Allows future providers without refactors; still fail-closed.
+  const upper = key.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
   return {
-    ok: true,
-    provider,
-    issuer: pc.issuer,
-    clientId: pc.clientId,
-    clientSecret: pc.clientSecret,
-    redirectUri,
+    provider: key,
+    issuer: requiredString(env?.[`OIDC_${upper}_ISSUER`], `OIDC_${upper}_ISSUER`),
+    clientId: requiredString(env?.[`OIDC_${upper}_CLIENT_ID`], `OIDC_${upper}_CLIENT_ID`),
+    clientSecret: requiredString(env?.[`OIDC_${upper}_CLIENT_SECRET`], `OIDC_${upper}_CLIENT_SECRET`),
+    redirectUri: requiredString(env?.[`OIDC_${upper}_REDIRECT_URI`], `OIDC_${upper}_REDIRECT_URI`),
+    tenantClaim,
+    defaultTenantId,
   };
+}
+
+/**
+ * REQUIRED NAMED EXPORT (fixes your build error):
+ * oidc.worker.mjs imports { resolveTenantIdpConfig } from "./tenantIdpConfig.worker.mjs"
+ *
+ * Contract:
+ * - providerKey is required.
+ * - tenantId is currently not used for env lookup (single app, multi-tenant runtime),
+ *   but is retained to support per-tenant overrides later without breaking call sites.
+ */
+export function resolveTenantIdpConfig({ tenantId, providerKey, env }) {
+  // tenantId retained for future enterprise overrides (per-tenant IdP routing)
+  // without changing call signature across the codebase.
+  void tenantId;
+  return resolveOidcConfig(providerKey, env);
 }
